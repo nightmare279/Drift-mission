@@ -31,6 +31,11 @@ local driftResultType = "good" -- "good", "crashed", "spinout"
 local driftResultEndTime = 0
 local screenEffectEndTime = 0
 
+-- Thread control variables
+local uiThreadActive = false
+local debugThreadActive = false
+local driftDetectionThreadActive = false
+
 -- Debug
 local debugEnabled = false
 local function debug(msg, ...)
@@ -40,6 +45,13 @@ end
 RegisterCommand("driftdbg", function()
     debugEnabled = not debugEnabled
     print("^2[driftmission]^7 Debugging is now " .. (debugEnabled and "ON" or "OFF"))
+    
+    -- Start/stop debug thread based on state
+    if debugEnabled then
+        StartDebugThread()
+    else
+        StopDebugThread()
+    end
 end)
 
 -----------------------------------
@@ -184,36 +196,45 @@ function DrawDriftUI()
     end
 end
 
--- Main UI rendering thread
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(0)
-        if showDriftUI then
-            DrawDriftUI()
-            
-            -- Handle drift result display timeout
-            if showDriftResult and GetGameTimer() > driftResultEndTime then
-                showDriftResult = false
-            end
-            
-            -- Handle screen effects
-            local currentTime = GetGameTimer()
-            if currentTime < screenEffectEndTime then
-                if driftResultType == "crashed" then
-                    -- Red filter for crash
-                    DrawRect(0.5, 0.5, 1.0, 1.0, 255, 0, 0, 100)
-                elseif driftResultType == "spinout" then
-                    -- Orange filter for spinout
-                    DrawRect(0.5, 0.5, 1.0, 1.0, 255, 150, 0, 80)
+-- UI Thread Control Functions
+function StartUIThread()
+    if uiThreadActive then return end
+    uiThreadActive = true
+    
+    Citizen.CreateThread(function()
+        while uiThreadActive do
+            Citizen.Wait(0)
+            if showDriftUI then
+                DrawDriftUI()
+                
+                -- Handle drift result display timeout
+                if showDriftResult and GetGameTimer() > driftResultEndTime then
+                    showDriftResult = false
                 end
+                
+                -- Handle screen effects
+                local currentTime = GetGameTimer()
+                if currentTime < screenEffectEndTime then
+                    if driftResultType == "crashed" then
+                        -- Red filter for crash
+                        DrawRect(0.5, 0.5, 1.0, 1.0, 255, 0, 0, 100)
+                    elseif driftResultType == "spinout" then
+                        -- Orange filter for spinout
+                        DrawRect(0.5, 0.5, 1.0, 1.0, 255, 150, 0, 80)
+                    end
+                end
+            elseif missionDisplayText ~= "" then
+                DrawMissionText(missionDisplayText)
+            else
+                Citizen.Wait(100)
             end
-        elseif missionDisplayText ~= "" then
-            DrawMissionText(missionDisplayText)
-        else
-            Citizen.Wait(100)
         end
-    end
-end)
+    end)
+end
+
+function StopUIThread()
+    uiThreadActive = false
+end
 
 -----------------------------------
 -- Utility Functions
@@ -233,11 +254,14 @@ end
 
 function SetStatusText(txt)
     missionDisplayText = txt or ""
+    if txt and txt ~= "" then
+        StartUIThread()
+    end
 end
 
 function TempMessage(txt, time)
     SetStatusText(txt)
-    Citizen.CreateThread(function()
+    CreateThread(function()
         Wait(time or 1200)
         SetStatusText("")
     end)
@@ -356,17 +380,31 @@ function DrawZoneDebug(zone)
     end
 end
 
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(0)
-        if Config.DebugZone and activeMissionId and Config.Missions[activeMissionId] then
-            local zone = Config.Missions[activeMissionId].Zone
-            if zone then DrawZoneDebug(zone) end
-        else
-            Citizen.Wait(300)
+-- Debug Thread Control Functions
+function StartDebugThread()
+    if debugThreadActive then return end
+    debugThreadActive = true
+    
+    Citizen.CreateThread(function()
+        while debugThreadActive do
+            Citizen.Wait(0)
+            if Config.DebugZone and activeMissionId and Config.Missions[activeMissionId] then
+                local zone = Config.Missions[activeMissionId].Zone
+                if zone then 
+                    DrawZoneDebug(zone) 
+                else
+                    Citizen.Wait(300)
+                end
+            else
+                Citizen.Wait(300)
+            end
         end
-    end
-end)
+    end)
+end
+
+function StopDebugThread()
+    debugThreadActive = false
+end
 
 -----------------------------------
 -- NPC, Target, and Dialog (zone spawn logic)
@@ -443,6 +481,9 @@ AddEventHandler('onResourceStop', function(resource)
     if resource == GetCurrentResourceName() then
         if driftKingZone then driftKingZone:remove() driftKingZone = nil end
         RemoveDriftNpc()
+        StopUIThread()
+        StopDebugThread()
+        StopDriftDetectionThread()
     end
 end)
 
@@ -619,9 +660,11 @@ RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
     TriggerServerEvent('driftmission:requestUnlocks')
 end)
 
-Citizen.CreateThread(function()
-    Wait(1200)
-    CreateDriftKingZone()
+AddEventHandler('onResourceStart', function(resource)
+   if resource == GetCurrentResourceName() then
+          Wait(1200)
+        CreateDriftKingZone()
+   end
 end)
 
 -----------------------------------
@@ -654,6 +697,165 @@ function IsPlayerInDriftZone(zone, ped)
     return false
 end
 
+-- Drift Detection Thread Control Functions
+function StartDriftDetectionThread()
+    if driftDetectionThreadActive then return end
+    driftDetectionThreadActive = true
+    
+    Citizen.CreateThread(function()
+        while driftDetectionThreadActive do
+            Wait(10)
+            if missionActive and missionTimer > 0 and activeMissionId then
+                local mission = Config.Missions[activeMissionId]
+                local ped = PlayerPedId()
+                
+                if not IsPedInAnyVehicle(ped, false) then
+                    if driftActive then
+                        -- End current drift when exiting vehicle
+                        if currentDrift.score > 0 and not currentDrift.crashed and not currentDrift.spinout then
+                            table.insert(driftScores, currentDrift.score)
+                            driftCombo = driftCombo + 1
+                        else
+                            driftCombo = 0
+                        end
+                        driftActive = false
+                        currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                    end
+                    currentAngle = 0
+                    currentSpeed = 0
+                    goto continue
+                end
+                
+                local veh = GetVehiclePedIsIn(ped, false)
+                currentSpeed = GetEntitySpeed(veh) * 2.23694
+                currentAngle = 0
+                
+                -- Calculate drift angle
+                do
+                    local heading = GetEntityHeading(veh)
+                    local vel = GetEntityVelocity(veh)
+                    local v = math.sqrt(vel.x^2 + vel.y^2)
+                    if v > 1.5 then
+                        local carDir = math.rad(heading + 90)
+                        local velDir = math.atan2(vel.y, vel.x)
+                        currentAngle = math.abs((math.deg(velDir - carDir) + 180) % 360 - 180)
+                    end
+                end
+                
+                local inZone = IsPlayerInDriftZone(mission.Zone, ped)
+                local drifting = (currentAngle > 10 and currentSpeed > 15 and inZone) -- Reduced speed requirement to 15mph
+                
+                -- Check combo timeout (reset if too much time between drifts)
+                local currentTime = GetGameTimer()
+                if not drifting and driftCombo > 0 and (currentTime - lastDriftTime) > comboResetTime then
+                    driftCombo = 0
+                end
+                
+                if drifting then
+                    if not driftActive then
+                        driftActive = true
+                        currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                    end
+                    
+                    currentDrift.duration = currentDrift.duration + 0.01
+                    
+                    -- Check for spinout (135+ degrees)
+                    if currentAngle >= 135 and not currentDrift.spinout then
+                        currentDrift.spinout = true
+                        -- Give only 30% of accumulated score when spinning out
+                        currentDrift.score = currentDrift.score * 0.3
+                    end
+                    
+                    -- Only accumulate score if not crashed or spun out
+                    if not currentDrift.crashed and not currentDrift.spinout then
+                        local gear = GetVehicleCurrentGear(veh)
+                        local reverseMultiplier = gear == 0 and 0.25 or 1.0
+                        
+                        -- Enhanced scoring system
+                        local angleMultiplier = 1.0
+                        if currentAngle > 45 then
+                            angleMultiplier = 1.5 -- Bonus for higher angles
+                        end
+                        if currentAngle > 90 then
+                            angleMultiplier = 2.0 -- Higher bonus for extreme angles
+                        end
+                        
+                        local speedMultiplier = math.min(currentSpeed / 60, 2.0) -- Cap speed bonus
+                        local comboMultiplier = 1.0 + (driftCombo * 0.1) -- 10% bonus per combo
+                        
+                        local scoreGain = currentAngle * currentSpeed * 0.002 * reverseMultiplier * angleMultiplier * speedMultiplier * comboMultiplier
+                        currentDrift.score = currentDrift.score + scoreGain
+                    end
+                    
+                    -- Check for crashes
+                    if HasEntityCollidedWithAnything(veh) or (IsEntityInAir(veh) and not IsVehicleOnAllWheels(veh)) then
+                        if not currentDrift.crashed then
+                            currentDrift.crashed = true
+                            currentDrift.score = 0 -- Zero out score on crash
+                        end
+                    end
+                    
+                    -- End drift if spun out
+                    if currentDrift.spinout then
+                        Wait(500) -- Brief delay to show spinout status
+                        local finalScore = currentDrift.score
+                        if finalScore > 0 then
+                            table.insert(driftScores, finalScore)
+                        end
+                        ShowDriftResult(finalScore, "spinout")
+                        driftCombo = 0 -- Reset combo on spinout
+                        lastDriftTime = currentTime
+                        driftActive = false
+                        currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                    end
+                else
+                    if driftActive then
+                        -- End current drift
+                        local finalScore = currentDrift.score
+                        local resultType = "good"
+                        
+                        if currentDrift.crashed then
+                            resultType = "crashed"
+                            driftCombo = 0
+                        elseif currentDrift.spinout then
+                            resultType = "spinout"
+                            driftCombo = 0
+                        else
+                            if finalScore > 0 then
+                                table.insert(driftScores, finalScore)
+                                driftCombo = driftCombo + 1
+                                lastDriftTime = currentTime -- Update last successful drift time
+                            else
+                                driftCombo = 0
+                            end
+                        end
+                        
+                        ShowDriftResult(finalScore, resultType)
+                        driftActive = false
+                        currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                    end
+                end
+            else
+                -- Reset when not in mission
+                if driftActive then
+                    driftActive = false
+                    currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                end
+                currentAngle = 0
+                currentSpeed = 0
+                driftCombo = 0
+                -- Sleep longer when not in mission to reduce CPU usage
+                Citizen.Wait(500)
+            end
+            ::continue::
+        end
+    end)
+end
+
+function StopDriftDetectionThread()
+    driftDetectionThreadActive = false
+end
+
 RegisterNetEvent("driftmission:start", function(missionId)
     missionId = tonumber(missionId) or 1
     local mission = Config.Missions[missionId]
@@ -663,6 +865,13 @@ RegisterNetEvent("driftmission:start", function(missionId)
     end
     ShowDriftZoneBlip(missionId)
     SetStatusText("~b~Head to the drift area. The timer will start when you arrive.")
+    
+    -- Start necessary threads for mission
+    StartDriftDetectionThread()
+    if debugEnabled then
+        StartDebugThread()
+    end
+    
     -- Wait until IN the zone (poly or circle)
     while not IsPlayerInDriftZone(mission.Zone, PlayerPedId()) do
         Wait(500)
@@ -691,162 +900,18 @@ RegisterNetEvent("driftmission:start", function(missionId)
             missionActive = false
             showDriftUI = false
             HideDriftZoneBlip()
+            StopDriftDetectionThread()
+            StopDebugThread()
             TempMessage("~b~Time's up! Return to the Drift King to submit your score.", 4000)
         end
     end)
 end)
 
--- Enhanced drift detection and scoring thread
-Citizen.CreateThread(function()
-    while true do
-        Wait(10)
-        if missionActive and missionTimer > 0 and activeMissionId then
-            local mission = Config.Missions[activeMissionId]
-            local ped = PlayerPedId()
-            
-            if not IsPedInAnyVehicle(ped, false) then
-                if driftActive then
-                    -- End current drift when exiting vehicle
-                    if currentDrift.score > 0 and not currentDrift.crashed and not currentDrift.spinout then
-                        table.insert(driftScores, currentDrift.score)
-                        driftCombo = driftCombo + 1
-                    else
-                        driftCombo = 0
-                    end
-                    driftActive = false
-                    currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
-                end
-                currentAngle = 0
-                currentSpeed = 0
-                goto continue
-            end
-            
-            local veh = GetVehiclePedIsIn(ped, false)
-            currentSpeed = GetEntitySpeed(veh) * 2.23694
-            currentAngle = 0
-            
-            -- Calculate drift angle
-            do
-                local heading = GetEntityHeading(veh)
-                local vel = GetEntityVelocity(veh)
-                local v = math.sqrt(vel.x^2 + vel.y^2)
-                if v > 1.5 then
-                    local carDir = math.rad(heading + 90)
-                    local velDir = math.atan2(vel.y, vel.x)
-                    currentAngle = math.abs((math.deg(velDir - carDir) + 180) % 360 - 180)
-                end
-            end
-            
-            local inZone = IsPlayerInDriftZone(mission.Zone, ped)
-            local drifting = (currentAngle > 10 and currentSpeed > 15 and inZone) -- Reduced speed requirement to 15mph
-            
-            -- Check combo timeout (reset if too much time between drifts)
-            local currentTime = GetGameTimer()
-            if not drifting and driftCombo > 0 and (currentTime - lastDriftTime) > comboResetTime then
-                driftCombo = 0
-            end
-            
-            if drifting then
-                if not driftActive then
-                    driftActive = true
-                    currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
-                end
-                
-                currentDrift.duration = currentDrift.duration + 0.01
-                
-                -- Check for spinout (135+ degrees)
-                if currentAngle >= 135 and not currentDrift.spinout then
-                    currentDrift.spinout = true
-                    -- Give only 30% of accumulated score when spinning out
-                    currentDrift.score = currentDrift.score * 0.3
-                end
-                
-                -- Only accumulate score if not crashed or spun out
-                if not currentDrift.crashed and not currentDrift.spinout then
-                    local gear = GetVehicleCurrentGear(veh)
-                    local reverseMultiplier = gear == 0 and 0.25 or 1.0
-                    
-                    -- Enhanced scoring system
-                    local angleMultiplier = 1.0
-                    if currentAngle > 45 then
-                        angleMultiplier = 1.5 -- Bonus for higher angles
-                    end
-                    if currentAngle > 90 then
-                        angleMultiplier = 2.0 -- Higher bonus for extreme angles
-                    end
-                    
-                    local speedMultiplier = math.min(currentSpeed / 60, 2.0) -- Cap speed bonus
-                    local comboMultiplier = 1.0 + (driftCombo * 0.1) -- 10% bonus per combo
-                    
-                    local scoreGain = currentAngle * currentSpeed * 0.002 * reverseMultiplier * angleMultiplier * speedMultiplier * comboMultiplier
-                    currentDrift.score = currentDrift.score + scoreGain
-                end
-                
-                -- Check for crashes
-                if HasEntityCollidedWithAnything(veh) or (IsEntityInAir(veh) and not IsVehicleOnAllWheels(veh)) then
-                    if not currentDrift.crashed then
-                        currentDrift.crashed = true
-                        currentDrift.score = 0 -- Zero out score on crash
-                    end
-                end
-                
-                -- End drift if spun out
-                if currentDrift.spinout then
-                    Wait(500) -- Brief delay to show spinout status
-                    local finalScore = currentDrift.score
-                    if finalScore > 0 then
-                        table.insert(driftScores, finalScore)
-                    end
-                    ShowDriftResult(finalScore, "spinout")
-                    driftCombo = 0 -- Reset combo on spinout
-                    lastDriftTime = currentTime
-                    driftActive = false
-                    currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
-                end
-            else
-                if driftActive then
-                    -- End current drift
-                    local finalScore = currentDrift.score
-                    local resultType = "good"
-                    
-                    if currentDrift.crashed then
-                        resultType = "crashed"
-                        driftCombo = 0
-                    elseif currentDrift.spinout then
-                        resultType = "spinout"
-                        driftCombo = 0
-                    else
-                        if finalScore > 0 then
-                            table.insert(driftScores, finalScore)
-                            driftCombo = driftCombo + 1
-                            lastDriftTime = currentTime -- Update last successful drift time
-                        else
-                            driftCombo = 0
-                        end
-                    end
-                    
-                    ShowDriftResult(finalScore, resultType)
-                    driftActive = false
-                    currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
-                end
-            end
-        else
-            -- Reset when not in mission
-            if driftActive then
-                driftActive = false
-                currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
-            end
-            currentAngle = 0
-            currentSpeed = 0
-            driftCombo = 0
-        end
-        ::continue::
-    end
-end)
-
 RegisterNetEvent("driftmission:turnin", function()
     HideDriftZoneBlip()
     showDriftUI = false
+    StopDriftDetectionThread()
+    StopDebugThread()
     local score = GetTotalScore()
     if not missionActive and score > 0 and activeMissionId then
         local mission = Config.Missions[activeMissionId]
