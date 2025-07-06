@@ -9,6 +9,7 @@ Config.DebugZone = true
 Config.Missions = {
     [1] = {
         Name = "Drift Mission I",
+        Description = "Welcome to your first drift challenge! Navigate the circular drift zone and rack up points by maintaining controlled slides. Perfect for beginners to learn the basics of drift scoring.",
         -- Simple circle
         Zone = {
             center = vector3(225.0042, -786.5714, 30.7387),
@@ -22,6 +23,7 @@ Config.Missions = {
     },
     [2] = {
         Name = "Drift Mission II",
+        Description = "Step up to the advanced polygon course! This complex track layout will test your precision and control. Navigate tight corners and extended drift zones to maximize your score potential.",
         -- Example polygon zone (Maze Bank Arena style, edit as needed)
         Zone = {
             poly = {

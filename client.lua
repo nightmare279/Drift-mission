@@ -234,7 +234,7 @@ AddEventHandler('onResourceStop', function(resource)
 end)
 
 -----------------------------------
--- Dialog logic (same as before)
+-- Enhanced Dialog logic
 -----------------------------------
 
 local Dialog = {}
@@ -250,31 +250,91 @@ end
 function RefreshDriftMissionDialog()
     local missionBtns = {}
     local unlockedCount = 0
+    
     for missionId, mission in pairs(Config.Missions) do
         missionId = tonumber(missionId)
         if mission.UnlockScore == 0 or playerProgress[missionId] then
             unlockedCount = unlockedCount + 1
+            local bestScore = playerBestScore[missionId] or 0
+            local scoreText = bestScore > 0 and string.format(" (Best: %d)", bestScore) or ""
+            
             table.insert(missionBtns, {
-                label = mission.Name or ('Drift Mission '..missionId),
+                label = (mission.Name or ('Drift Mission '..missionId)) .. scoreText,
                 nextDialog = nil,
-                close = true,
+                close = false,
                 onSelect = function()
-                    TriggerEvent("driftmission:start", missionId)
+                    -- Show mission details dialog
+                    local detailText = string.format(
+                        "%s\n\nDetails:\nTime Limit: %d seconds\nReward Rate: $%.2f per point\nBest Score: %d points\n\n%s",
+                        mission.Name or "Drift Mission",
+                        mission.MissionTime or 60,
+                        mission.RewardPerScore or 0,
+                        bestScore,
+                        mission.Description or "No description available."
+                    )
+                    
+                    -- Create temporary detail dialog
+                    local detailDialog = {
+                        [1] = {
+                            id = 'mission_detail',
+                            job = 'Drift King',
+                            name = 'Slider Sam',
+                            text = detailText,
+                            buttons = {
+                                {
+                                    label = 'Accept Mission',
+                                    close = true,
+                                    onSelect = function()
+                                        TriggerEvent("driftmission:start", missionId)
+                                    end,
+                                },
+                                {
+                                    label = 'Back to Missions',
+                                    nextDialog = 'driftking_missions',
+                                    close = false,
+                                },
+                            },
+                        },
+                        [2] = Dialog[2], -- Include the missions dialog
+                        [3] = Dialog[1]  -- Include the main dialog
+                    }
+                    
+                    exports.bl_dialog:showDialog({
+                        ped = driftNpc,
+                        dialog = detailDialog,
+                        startId = 'mission_detail'
+                    })
+                end,
+            })
+        else
+            -- Show locked missions with unlock requirements
+            table.insert(missionBtns, {
+                label = string.format("LOCKED %s (Requires %d points)", 
+                    mission.Name or ('Drift Mission '..missionId), 
+                    mission.UnlockScore
+                ),
+                close = false,
+                nextDialog = 'driftking_missions',
+                onSelect = function()
+                    TempMessage(string.format("~r~Mission locked!~w~\nRequires %d drift points to unlock.", mission.UnlockScore), 3000)
                 end,
             })
         end
     end
+    
     if unlockedCount == 0 then
         table.insert(missionBtns, {
             label = 'No missions unlocked yet!',
             close = true,
         })
     end
+    
     table.insert(missionBtns, {
         label = '< Back',
         nextDialog = 'driftking_main',
         close = false,
     })
+    
     Dialog[2] = {
         id = 'driftking_missions',
         job = 'Drift King',
@@ -295,15 +355,17 @@ function RefreshDriftMainDialog()
             close = true,
         },
     }
+    
     if not missionActive and activeMissionId and GetTotalScore() > 0 then
         table.insert(mainBtns, 2, {
-            label = 'Turn In Score',
+            label = string.format('Turn In Score (%d points)', GetTotalScore()),
             close = true,
             onSelect = function()
                 TriggerEvent("driftmission:turnin")
             end,
         })
     end
+    
     Dialog[1] = {
         id = 'driftking_main',
         job = 'Drift King',
