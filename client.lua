@@ -36,6 +36,11 @@ local uiThreadActive = false
 local debugThreadActive = false
 local driftDetectionThreadActive = false
 
+-- Police dispatch tracking
+local lastCrashDispatch = 0
+local lastSpinoutDispatch = 0
+local dispatchCooldown = 30000 -- 30 seconds between dispatches
+
 -- Debug
 local debugEnabled = false
 local function debug(msg, ...)
@@ -237,6 +242,64 @@ function StopUIThread()
 end
 
 -----------------------------------
+-- Police Dispatch Functions
+-----------------------------------
+
+function TriggerPoliceDispatch(dispatchType)
+    local currentTime = GetGameTimer()
+    
+    -- Check cooldown
+    if (dispatchType == "crash" and currentTime - lastCrashDispatch < dispatchCooldown) or
+       (dispatchType == "spinout" and currentTime - lastSpinoutDispatch < dispatchCooldown) then
+        return
+    end
+    
+    local ped = PlayerPedId()
+    if not IsPedInAnyVehicle(ped, false) then return end
+    
+    local vehicle = GetVehiclePedIsIn(ped, false)
+    local coords = GetEntityCoords(ped)
+    
+    -- Get vehicle primary color
+    local primaryColor, secondaryColor = GetVehicleColours(vehicle)
+    local colorName = GetVehicleColorName(primaryColor)
+    
+    -- Send dispatch to server
+    TriggerServerEvent("driftmission:policeDispatch", dispatchType, coords, colorName)
+    
+    -- Update cooldown
+    if dispatchType == "crash" then
+        lastCrashDispatch = currentTime
+    elseif dispatchType == "spinout" then
+        lastSpinoutDispatch = currentTime
+    end
+end
+
+function GetVehicleColorName(colorIndex)
+    local colors = {
+        [0] = "Black", [1] = "Graphite", [2] = "Black Steel", [3] = "Dark Silver", [4] = "Silver",
+        [5] = "Blue Silver", [6] = "Steel Gray", [7] = "Shadow Silver", [8] = "Stone Silver",
+        [9] = "Midnight Silver", [10] = "Gun Metal", [11] = "Anthracite", [12] = "Red",
+        [13] = "Torino Red", [14] = "Formula Red", [15] = "Lava Red", [16] = "Blaze Red",
+        [17] = "Grace Red", [18] = "Garnet Red", [19] = "Sunset Red", [20] = "Cabernet Red",
+        [21] = "Wine Red", [22] = "Candy Red", [23] = "Hot Pink", [24] = "Pfsiter Pink",
+        [25] = "Salmon Pink", [26] = "Sunrise Orange", [27] = "Orange", [28] = "Bright Orange",
+        [29] = "Gold", [30] = "Bronze", [31] = "Yellow", [32] = "Race Yellow", [33] = "Dew Yellow",
+        [34] = "Dark Green", [35] = "Racing Green", [36] = "Sea Green", [37] = "Olive Green",
+        [38] = "Bright Green", [39] = "Gasoline Green", [40] = "Lime Green", [41] = "Midnight Blue",
+        [42] = "Galaxy Blue", [43] = "Dark Blue", [44] = "Saxon Blue", [45] = "Blue",
+        [46] = "Mariner Blue", [47] = "Harbor Blue", [48] = "Diamond Blue", [49] = "Surf Blue",
+        [50] = "Nautical Blue", [51] = "Racing Blue", [52] = "Ultra Blue", [53] = "Light Blue",
+        [54] = "Chocolate Brown", [55] = "Bison Brown", [56] = "Creek Brown", [57] = "Feltzer Brown",
+        [58] = "Maple Brown", [59] = "Beechwood Brown", [60] = "Sienna Brown", [61] = "Saddle Brown",
+        [62] = "Moss Brown", [63] = "Woodbeech Brown", [64] = "Straw Brown", [65] = "Sandy Brown",
+        [66] = "Bleached Brown", [67] = "Schafter Purple", [68] = "Spinnaker Purple", [69] = "Midnight Purple",
+        [70] = "Bright Purple", [71] = "Cream", [72] = "Ice White", [73] = "Frost White"
+    }
+    return colors[colorIndex] or "Unknown"
+end
+
+-----------------------------------
 -- Utility Functions
 -----------------------------------
 
@@ -314,6 +377,11 @@ function ShowDriftResult(score, resultType)
     showDriftResult = true
     driftResultEndTime = GetGameTimer() + 1000 -- Show for 1 second
     screenEffectEndTime = GetGameTimer() + 1000 -- Screen effect for 1 second
+    
+    -- Trigger police dispatch for crashes and spinouts
+    if resultType == "crashed" or resultType == "spinout" then
+        TriggerPoliceDispatch(resultType)
+    end
     
     -- Apply native effects
     if resultType == "crashed" then
@@ -863,6 +931,10 @@ RegisterNetEvent("driftmission:start", function(missionId)
         TempMessage("~r~Already on a mission!", 1200)
         return 
     end
+    
+    -- Notify server about mission start for police presence check
+    TriggerServerEvent("driftmission:missionStart", missionId)
+    
     ShowDriftZoneBlip(missionId)
     SetStatusText("~b~Head to the drift area. The timer will start when you arrive.")
     

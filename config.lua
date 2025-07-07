@@ -20,6 +20,9 @@ Config.Missions = {
         UnlockScore = 0,
         BlipSprite = 398,
         BlipColor = 1,
+        -- Police dispatch chances
+        PoliceOnCrash = 0.99,    -- 15% chance to trigger dispatch on crash
+        PoliceOnSpinout = 0.99,  -- 8% chance to trigger dispatch on spinout
     },
     [2] = {
         Name = "Drift Mission II",
@@ -43,6 +46,9 @@ Config.Missions = {
         UnlockScore = 3500,
         BlipSprite = 398,
         BlipColor = 1,
+        -- Police dispatch chances
+        PoliceOnCrash = 0.20,    -- 20% chance to trigger dispatch on crash
+        PoliceOnSpinout = 0.12,  -- 12% chance to trigger dispatch on spinout
     },
     -- Add more missions!
 }
