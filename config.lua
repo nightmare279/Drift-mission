@@ -21,8 +21,8 @@ Config.Missions = {
         BlipSprite = 398,
         BlipColor = 1,
         -- Police dispatch chances
-        PoliceOnCrash = 0.99,    -- 15% chance to trigger dispatch on crash
-        PoliceOnSpinout = 0.99,  -- 8% chance to trigger dispatch on spinout
+        PoliceOnCrash = 0.15,    -- 15% chance to trigger dispatch on crash
+        PoliceOnSpinout = 0.08,  -- 8% chance to trigger dispatch on spinout
     },
     [2] = {
         Name = "Drift Mission II",

@@ -41,6 +41,17 @@ local lastCrashDispatch = 0
 local lastSpinoutDispatch = 0
 local dispatchCooldown = 30000 -- 30 seconds between dispatches
 
+-- NUI Management
+local leaderboardOpen = false
+
+-- Initialize NUI as hidden
+Citizen.CreateThread(function()
+    Wait(1000) -- Wait for NUI to load
+    SendNUIMessage({
+        type = 'hideLeaderboard'
+    })
+end)
+
 -- Debug
 local debugEnabled = false
 local function debug(msg, ...)
@@ -57,6 +68,39 @@ RegisterCommand("driftdbg", function()
     else
         StopDebugThread()
     end
+end)
+
+-----------------------------------
+-- NUI Callbacks
+-----------------------------------
+
+RegisterNUICallback('closeLeaderboard', function(data, cb)
+    SetNuiFocus(false, false)
+    leaderboardOpen = false
+    SendNUIMessage({
+        type = 'hideLeaderboard'
+    })
+    cb('ok')
+end)
+
+function OpenLeaderboard()
+    if leaderboardOpen then return end
+    
+    leaderboardOpen = true
+    TriggerServerEvent('driftmission:requestLeaderboard')
+end
+
+RegisterNetEvent('driftmission:receiveLeaderboard', function(leaderboardData, missions)
+    SetNuiFocus(true, true)
+    -- Force NUI to be transparent
+    SendNUIMessage({
+        type = 'showLeaderboard',
+        leaderboardData = leaderboardData,
+        missions = missions,
+        currentMission = activeMissionId or 1
+    })
+    -- Try to set the NUI background transparent on the client side
+    SetNuiFocusKeepInput(false)
 end)
 
 -----------------------------------
@@ -325,7 +369,7 @@ end
 function TempMessage(txt, time)
     SetStatusText(txt)
     CreateThread(function()
-        Wait(time or 1200)
+        Wait(time or 5000) -- Increased default from 1200 to 5000
         SetStatusText("")
     end)
 end
@@ -539,9 +583,14 @@ function CreateDriftKingZone()
     })
 end
 
+-- Fixed player loading issue
 AddEventHandler('onResourceStart', function(resource)
     if resource == GetCurrentResourceName() then
         CreateDriftKingZone()
+        -- Request unlocks for already loaded players
+        if LocalPlayer.state.isLoggedIn then
+            TriggerServerEvent('driftmission:requestUnlocks')
+        end
     end
 end)
 
@@ -552,6 +601,14 @@ AddEventHandler('onResourceStop', function(resource)
         StopUIThread()
         StopDebugThread()
         StopDriftDetectionThread()
+        -- Close NUI if open
+        if leaderboardOpen then
+            SetNuiFocus(false, false)
+            leaderboardOpen = false
+            SendNUIMessage({
+                type = 'hideLeaderboard'
+            })
+        end
     end
 end)
 
@@ -665,13 +722,27 @@ function RefreshDriftMainDialog()
             nextDialog = 'driftking_missions',
         },
         {
-            label = 'Nothing',
+            label = 'View Leaderboard',
             close = true,
+            onSelect = function()
+                OpenLeaderboard()
+            end,
         },
     }
     
+    -- Add cancel mission option if currently active
+    if missionActive and activeMissionId then
+        table.insert(mainBtns, 1, {
+            label = 'Cancel Current Mission',
+            close = true,
+            onSelect = function()
+                CancelCurrentMission()
+            end,
+        })
+    end
+    
     if not missionActive and activeMissionId and GetTotalScore() > 0 then
-        table.insert(mainBtns, 2, {
+        table.insert(mainBtns, #mainBtns, {
             label = string.format('Turn In Score (%d points)', GetTotalScore()),
             close = true,
             onSelect = function()
@@ -679,6 +750,11 @@ function RefreshDriftMainDialog()
             end,
         })
     end
+    
+    table.insert(mainBtns, {
+        label = 'Nothing',
+        close = true,
+    })
     
     Dialog[1] = {
         id = 'driftking_main',
@@ -697,6 +773,20 @@ function ShowDriftKingDialog()
         dialog = Dialog,
         startId = 'driftking_main'
     })
+end
+
+function CancelCurrentMission()
+    if missionActive then
+        missionActive = false
+        showDriftUI = false
+        HideDriftZoneBlip()
+        StopDriftDetectionThread()
+        StopDebugThread()
+        driftScores = {}
+        activeMissionId = nil
+        driftCombo = 0
+        TempMessage("~r~Mission cancelled!", 2000)
+    end
 end
 
 -----------------------------------
@@ -724,15 +814,38 @@ RegisterNetEvent("driftmission:unlocked", function(missionId)
     if driftNpcSpawned then SpawnDriftNpc() end
 end)
 
-RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
-    TriggerServerEvent('driftmission:requestUnlocks')
+function ShowLeaderboardMessage(txt, duration)
+    SetStatusText(txt)
+    CreateThread(function()
+        Wait(duration)
+        SetStatusText("")
+    end)
+end
+
+RegisterNetEvent("driftmission:showLeaderboardMessage", function(messageType, bonusAmount)
+    if messageType == "new_record" then
+        ShowLeaderboardMessage("~y~🏆 NEW RECORD!~w~\n~g~You're now #1!~w~\n~g~Bonus: $" .. (bonusAmount or 5000) .. "!", 18000)
+    elseif messageType == "improved_record" then
+        ShowLeaderboardMessage("~y~🏁 You beat your previous record!~w~\n~b~You're still #1!", 10000)
+    end
 end)
 
-AddEventHandler('onResourceStart', function(resource)
-   if resource == GetCurrentResourceName() then
-          Wait(1200)
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
+    TriggerServerEvent('driftmission:requestUnlocks')
+    -- Ensure drift zone is created for newly loaded players
+    Citizen.SetTimeout(2000, function()
         CreateDriftKingZone()
-   end
+    end)
+end)
+
+-- Handle player spawning after resource is already running
+AddEventHandler('QBCore:Client:OnPlayerLoaded', function()
+    Citizen.SetTimeout(5000, function() -- Give some time for everything to load
+        if not driftKingZone then
+            CreateDriftKingZone()
+        end
+        TriggerServerEvent('driftmission:requestUnlocks')
+    end)
 end)
 
 -----------------------------------

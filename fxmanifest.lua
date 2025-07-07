@@ -14,3 +14,9 @@ server_scripts {
     'unlocks.lua',
     'server.lua'
 }
+
+ui_page 'nui/index.html'
+
+files {
+    'nui/index.html'
+}
