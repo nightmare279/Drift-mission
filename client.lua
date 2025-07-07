@@ -98,7 +98,7 @@ function DrawDriftUI()
     local totalScoreX = centerX + spacing  -- Total score now on right
     
     -- Time remaining (fixed position) - using GTA font and increased size
-    local timeColor = missionTimer > 30 and {255, 255, 255, 255} or {255, 100, 100, 255}
+    local timeColor = missionTimer > 30 and {110, 193, 255, 255} or {255, 100, 100, 255}
     SetTextFont(4) -- Font 4 is the GTA style font
     SetTextScale(0.575, 0.575) -- Increased by 15% from 0.5 to 0.575
     SetTextColour(timeColor[1], timeColor[2], timeColor[3], timeColor[4])
@@ -111,7 +111,7 @@ function DrawDriftUI()
     -- Total score (fixed position - now on right)
     SetTextFont(4) -- Changed to GTA font
     SetTextScale(0.575, 0.575) -- Increased by 15% from 0.5 to 0.575
-    SetTextColour(255, 255, 100, 255)
+    SetTextColour(110, 193, 255, 255) -- Changed to light blue
     SetTextOutline()
     SetTextCentre(true)
     BeginTextCommandDisplayText("STRING")
@@ -121,7 +121,7 @@ function DrawDriftUI()
     -- Current score and status (fixed position - now in center, only when drifting or showing result)
     if driftActive or showDriftResult then
         local displayScore = showDriftResult and driftResultScore or math.floor(currentDrift.score)
-        local scoreColor = {100, 255, 100, 255} -- Default green
+        local scoreColor = {110, 193, 255, 255} -- Changed to light blue as default
         local displayText = ""
         
         if showDriftResult or driftActive then
@@ -886,13 +886,18 @@ RegisterNetEvent("driftmission:start", function(missionId)
     
     -- Mission timer thread
     Citizen.CreateThread(function()
+        local lastOutOfZoneMessage = 0
         while missionActive and missionTimer > 0 do
             Wait(1000)
             missionTimer = missionTimer - 1
+            
+            -- Check if player is out of zone and show message more frequently
             if not IsPlayerInDriftZone(mission.Zone, PlayerPedId()) then
-                -- Brief notification when outside zone
-                if missionTimer % 5 == 0 then -- Show every 5 seconds
-                    TempMessage("~r~Return to the drift zone!", 1000)
+                local currentTime = GetGameTimer()
+                -- Show message every 3 seconds instead of every 5, and don't depend on timer value
+                if currentTime - lastOutOfZoneMessage >= 3000 then
+                    TempMessage("~r~Return to the drift zone!", 2000)
+                    lastOutOfZoneMessage = currentTime
                 end
             end
         end
