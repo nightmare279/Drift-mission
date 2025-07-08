@@ -445,6 +445,7 @@ function StartCountdown(callback)
 end
 
 -- Sprint Detection Thread
+-- Sprint Detection Thread
 function StartSprintDetectionThread()
     if sprintDetectionThreadActive then return end
     sprintDetectionThreadActive = true
@@ -481,13 +482,19 @@ function StartSprintDetectionThread()
                     -- Drift detection logic - always in zone for sprint missions
                     local drifting = (currentAngle > 10 and currentSpeed > 15)
                     
+                    -- Check combo timeout (reset if too much time between drifts)
+                    local currentTime = GetGameTimer()
+                    if not drifting and driftCombo > 0 and (currentTime - lastDriftTime) > comboResetTime then
+                        driftCombo = 0
+                    end
+                    
                     if drifting then
                         if not driftActive then
                             driftActive = true
                             currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
                         end
                         
-                        currentDrift.duration = currentDrift.duration + 0.25 -- Adjusted for new wait time
+                        currentDrift.duration = currentDrift.duration + 0.01 -- Changed from 0.25 to match drift zones
                         
                         -- Check for spinout
                         if currentAngle >= 135 and not currentDrift.spinout then
@@ -495,23 +502,30 @@ function StartSprintDetectionThread()
                             currentDrift.score = currentDrift.score * 0.3
                         end
                         
-                        -- Accumulate score if not crashed or spun out
+                        -- Accumulate score if not crashed or spun out - SAME AS DRIFT ZONES
                         if not currentDrift.crashed and not currentDrift.spinout then
                             local gear = GetVehicleCurrentGear(veh)
                             local reverseMultiplier = gear == 0 and 0.25 or 1.0
+                            
+                            -- Enhanced scoring system - SAME AS DRIFT ZONES
                             local angleMultiplier = 1.0
-                            if currentAngle > 45 then angleMultiplier = 1.5 end
-                            if currentAngle > 90 then angleMultiplier = 2.0 end
+                            if currentAngle > 45 then
+                                angleMultiplier = 1.5 -- Bonus for higher angles
+                            end
+                            if currentAngle > 90 then
+                                angleMultiplier = 2.0 -- Higher bonus for extreme angles
+                            end
                             
-                            local speedMultiplier = math.min(currentSpeed / 60, 2.0)
-                            local comboMultiplier = 1.0 + (driftCombo * 0.1)
+                            local speedMultiplier = math.min(currentSpeed / 60, 2.0) -- Cap speed bonus
+                            local comboMultiplier = 1.0 + (driftCombo * 0.1) -- 10% bonus per combo
                             
-                            local scoreGain = currentAngle * currentSpeed * 0.05 * reverseMultiplier * angleMultiplier * speedMultiplier * comboMultiplier -- Adjusted for new wait time
+                            -- FIXED: Use same scoring calculation as drift zones (0.002 instead of 0.05)
+                            local scoreGain = currentAngle * currentSpeed * 0.002 * reverseMultiplier * angleMultiplier * speedMultiplier * comboMultiplier
                             currentDrift.score = currentDrift.score + scoreGain
                         end
                         
                         -- Check for crashes
-                        if HasEntityCollidedWithAnything(veh) then
+                        if HasEntityCollidedWithAnything(veh) or (IsEntityInAir(veh) and not IsVehicleOnAllWheels(veh)) then
                             if not currentDrift.crashed then
                                 currentDrift.crashed = true
                                 currentDrift.score = 0
@@ -527,6 +541,7 @@ function StartSprintDetectionThread()
                             end
                             ShowDriftResult(finalScore, "spinout")
                             driftCombo = 0
+                            lastDriftTime = currentTime -- Added missing lastDriftTime update
                             driftActive = false
                             currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
                         end
@@ -546,6 +561,7 @@ function StartSprintDetectionThread()
                                 if finalScore > 0 then
                                     table.insert(driftScores, finalScore)
                                     driftCombo = driftCombo + 1
+                                    lastDriftTime = currentTime -- Update last successful drift time
                                 else
                                     driftCombo = 0
                                 end

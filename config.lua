@@ -58,6 +58,7 @@ Config.Missions = {
         Type = "sprint", -- new mission type
         StartingPosition = vector4(175.2536, -793.5472, 31.3595, 157.4504), -- Starting on South Park Way facing north
         InitialTime = 30, -- seconds to reach first checkpoint
+        OutOfZoneAngle = 360, -- degrees - if player is more than this away from next checkpoint direction, consider out of zone
         Checkpoints = {
             [1] = {
                 position = vector4(120.1423, -966.0762, 28.7910, 160.8403), -- East on South Park Way
@@ -85,9 +86,9 @@ Config.Missions = {
             },
         },
         FinishPosition = vector4(216.4853, -1123.2692, 28.6091, 176.3168), -- Back to start (full lap)
-        FlareDistance = 8.0, -- distance between left and right flares
-        CheckpointTriggerDistance = 9.0, -- distance to trigger checkpoint
-        RewardPerScore = 0.30,
+        FlareDistance = 20.0, -- distance between left and right flares
+        CheckpointTriggerDistance = 25.0, -- distance to trigger checkpoint
+        RewardPerScore = 0.08,
         UnlockScore = 5000,
         BlipSprite = 570, -- race flag
         BlipColor = 6, -- purple
