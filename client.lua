@@ -451,12 +451,114 @@ function StartSprintDetectionThread()
     
     Citizen.CreateThread(function()
         while sprintDetectionThreadActive do
-            Wait(100) -- Back to normal wait time since we're using the drift detection thread
+            Wait(10) -- Increased wait time to reduce lag
             
             if sprintMission and missionActive and missionTimer > 0 and activeMissionId then
                 local mission = Config.Missions[activeMissionId]
+                local ped = PlayerPedId()
                 
-                -- Check checkpoint progression
+                -- Skip direction checking - entire map is in zone now
+                playerInCorrectDirection = true
+                showOutOfZone = false
+                
+                -- Check if player is in vehicle for drift detection
+                if IsPedInAnyVehicle(ped, false) then
+                    local veh = GetVehiclePedIsIn(ped, false)
+                    currentSpeed = GetEntitySpeed(veh) * 2.23694
+                    
+                    -- Calculate drift angle
+                    local heading = GetEntityHeading(veh)
+                    local vel = GetEntityVelocity(veh)
+                    local v = math.sqrt(vel.x^2 + vel.y^2)
+                    if v > 1.5 then
+                        local carDir = math.rad(heading + 90)
+                        local velDir = math.atan2(vel.y, vel.x)
+                        currentAngle = math.abs((math.deg(velDir - carDir) + 180) % 360 - 180)
+                    else
+                        currentAngle = 0
+                    end
+                    
+                    -- Drift detection logic - always in zone for sprint missions
+                    local drifting = (currentAngle > 10 and currentSpeed > 15)
+                    
+                    if drifting then
+                        if not driftActive then
+                            driftActive = true
+                            currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                        end
+                        
+                        currentDrift.duration = currentDrift.duration + 0.25 -- Adjusted for new wait time
+                        
+                        -- Check for spinout
+                        if currentAngle >= 135 and not currentDrift.spinout then
+                            currentDrift.spinout = true
+                            currentDrift.score = currentDrift.score * 0.3
+                        end
+                        
+                        -- Accumulate score if not crashed or spun out
+                        if not currentDrift.crashed and not currentDrift.spinout then
+                            local gear = GetVehicleCurrentGear(veh)
+                            local reverseMultiplier = gear == 0 and 0.25 or 1.0
+                            local angleMultiplier = 1.0
+                            if currentAngle > 45 then angleMultiplier = 1.5 end
+                            if currentAngle > 90 then angleMultiplier = 2.0 end
+                            
+                            local speedMultiplier = math.min(currentSpeed / 60, 2.0)
+                            local comboMultiplier = 1.0 + (driftCombo * 0.1)
+                            
+                            local scoreGain = currentAngle * currentSpeed * 0.05 * reverseMultiplier * angleMultiplier * speedMultiplier * comboMultiplier -- Adjusted for new wait time
+                            currentDrift.score = currentDrift.score + scoreGain
+                        end
+                        
+                        -- Check for crashes
+                        if HasEntityCollidedWithAnything(veh) then
+                            if not currentDrift.crashed then
+                                currentDrift.crashed = true
+                                currentDrift.score = 0
+                            end
+                        end
+                        
+                        -- End drift if spun out
+                        if currentDrift.spinout then
+                            Wait(500)
+                            local finalScore = currentDrift.score
+                            if finalScore > 0 then
+                                table.insert(driftScores, finalScore)
+                            end
+                            ShowDriftResult(finalScore, "spinout")
+                            driftCombo = 0
+                            driftActive = false
+                            currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                        end
+                    else
+                        if driftActive then
+                            -- End current drift
+                            local finalScore = currentDrift.score
+                            local resultType = "good"
+                            
+                            if currentDrift.crashed then
+                                resultType = "crashed"
+                                driftCombo = 0
+                            elseif currentDrift.spinout then
+                                resultType = "spinout"
+                                driftCombo = 0
+                            else
+                                if finalScore > 0 then
+                                    table.insert(driftScores, finalScore)
+                                    driftCombo = driftCombo + 1
+                                else
+                                    driftCombo = 0
+                                end
+                            end
+                            
+                            ShowDriftResult(finalScore, resultType)
+                            driftActive = false
+                            currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                        end
+                    end
+                end
+                
+                -- Check checkpoint progression (moved to slower update cycle)
                 local nextCheckpointIndex = currentCheckpoint + 1
                 if nextCheckpointIndex <= #mission.Checkpoints then
                     local checkpoint = mission.Checkpoints[nextCheckpointIndex]
@@ -1624,7 +1726,7 @@ RegisterNetEvent("driftmission:start", function(missionId)
     TriggerServerEvent("driftmission:missionStart", missionId)
     
     if isSprintMission then
-        -- Sprint mission logic - create a massive zone for drift detection
+        -- Sprint mission logic
         sprintMission = true
         activeMissionId = missionId
         currentCheckpoint = 0
@@ -1633,26 +1735,14 @@ RegisterNetEvent("driftmission:start", function(missionId)
         playerInCorrectDirection = true
         showOutOfZone = false
         
-        -- Create a fake mission object with massive zone for drift detection to work
-        local sprintFakeMission = {
-            Zone = {
-                center = vector3(0.0, 0.0, 0.0), -- Center of map
-                radius = 10000.0 -- Massive radius to cover entire map
-            }
-        }
-        
-        -- Override the mission zone temporarily
-        Config.Missions[missionId].Zone = sprintFakeMission.Zone
-        
         -- Create blips for all checkpoints and finish
         CreateSprintBlips(mission)
         
         -- Set initial status
         SetStatusText("~b~Head to the starting line to begin the sprint.")
         
-        -- Start detection threads - use drift detection thread for UI consistency
-        StartDriftDetectionThread() -- This will handle the UI updates smoothly
-        StartSprintDetectionThread() -- This will handle checkpoint logic only
+        -- Start detection threads
+        StartSprintDetectionThread()
         if debugEnabled then
             StartDebugThread()
         end
@@ -1677,8 +1767,6 @@ RegisterNetEvent("driftmission:start", function(missionId)
             missionActive = true
             missionTimer = mission.InitialTime or 20
             showDriftUI = true
-            playerInZone = true -- Always in zone for sprint missions
-            showOutOfZone = false
             
             -- Update flares for first 2 checkpoints
             UpdateActiveFlares(mission)
@@ -1699,7 +1787,6 @@ RegisterNetEvent("driftmission:start", function(missionId)
                     showDriftUI = false
                     showOutOfZone = false
                     playerInCorrectDirection = true
-                    playerInZone = false
                     
                     -- Clean up
                     for _, flares in ipairs(flareObjects) do
@@ -1707,7 +1794,6 @@ RegisterNetEvent("driftmission:start", function(missionId)
                     end
                     flareObjects = {}
                     RemoveSprintBlips()
-                    StopDriftDetectionThread()
                     StopSprintDetectionThread()
                     StopDebugThread()
                     
