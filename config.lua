@@ -58,24 +58,35 @@ Config.Missions = {
         Type = "sprint", -- new mission type
         StartingPosition = vector4(175.2536, -793.5472, 31.3595, 157.4504), -- Starting on South Park Way facing north
         InitialTime = 30, -- seconds to reach first checkpoint
-        OutOfZoneAngle = 150, -- degrees - if player is more than this away from next checkpoint direction, consider out of zone
         Checkpoints = {
             [1] = {
-                position = vector4(161.7272, -833.7833, 31.1805, 161.1737), -- East on South Park Way
-                timeBonus = 15, -- seconds added when reached
+                position = vector4(120.1423, -966.0762, 28.7910, 160.8403), -- East on South Park Way
+                timeBonus = 5, -- seconds added when reached
                 blipSprite = 1,
                 blipColor = 5,
             },
             [2] = {
-                position = vector4(150.1861, -866.5803, 30.7429, 160.2843), -- North on Power Street heading south
-                timeBonus = 15,
+                position = vector4(126.5521, -1008.5294, 28.6936, 248.7461), -- North on Power Street heading south
+                timeBonus = 5,
+                blipSprite = 1,
+                blipColor = 5,
+            },
+            [3] = {
+                position = vector4(200.5200, -1035.2136, 28.6579, 251.5851), -- Back to start (full lap)
+                timeBonus = 5,
+                blipSprite = 1,
+                blipColor = 5,
+            },
+            [4] = {
+                position = vector4(221.1239, -1065.0391, 28.4828, 170.7524), -- Back to start (full lap)
+                timeBonus = 5,
                 blipSprite = 1,
                 blipColor = 5,
             },
         },
-        FinishPosition = vector4(134.0956, -909.3702, 30.1970, 159.0968), -- Back to start (full lap)
+        FinishPosition = vector4(216.4853, -1123.2692, 28.6091, 176.3168), -- Back to start (full lap)
         FlareDistance = 8.0, -- distance between left and right flares
-        CheckpointTriggerDistance = 12.0, -- distance to trigger checkpoint
+        CheckpointTriggerDistance = 9.0, -- distance to trigger checkpoint
         RewardPerScore = 0.30,
         UnlockScore = 5000,
         BlipSprite = 570, -- race flag
