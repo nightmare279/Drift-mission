@@ -264,45 +264,38 @@ RegisterNetEvent("driftmission:policeDispatch", function(dispatchType, coords, v
     end
 end)
 
--- Check if player achieved #1 position and handle bonuses (simpler logic)
-function CheckLeaderboardPosition(citizenid, missionId, previousBestScore)
-    local leaderboards = GenerateLeaderboardData()
-    local missionLeaderboard = leaderboards[missionId] or {}
+-- FIXED: Check if player achieved #1 position and handle bonuses
+function CheckLeaderboardPosition(citizenid, missionId, newScore, previousBestScore)
+    -- Generate fresh leaderboard data BEFORE updating the score
+    local currentLeaderboards = GenerateLeaderboardData()
+    local missionLeaderboard = currentLeaderboards[missionId] or {}
     
-    if #missionLeaderboard == 0 then
+    -- Get the current #1 player (before this score update)
+    local currentFirstPlace = nil
+    if #missionLeaderboard > 0 then
+        -- Sort to ensure we have the correct order
+        table.sort(missionLeaderboard, function(a, b)
+            return a.score > b.score
+        end)
+        currentFirstPlace = missionLeaderboard[1]
+    end
+    
+    -- Check different scenarios
+    if not currentFirstPlace then
+        -- No one has scored on this mission yet, so this player gets #1
+        return "first_place_new"
+    elseif currentFirstPlace.citizenid == citizenid then
+        -- Player was already #1, just improving their score
+        return "first_place_improved"
+    elseif newScore > currentFirstPlace.score then
+        -- Player is overtaking someone else for #1
+        return "first_place_new"
+    else
+        -- Player is not #1
         return "not_first"
     end
-    
-    -- Sort to get current rankings
-    table.sort(missionLeaderboard, function(a, b)
-        return a.score > b.score
-    end)
-    
-    -- Check if this player is now #1
-    if #missionLeaderboard > 0 and missionLeaderboard[1].citizenid == citizenid then
-        -- They are #1 now. Check if they had the previous best score.
-        if previousBestScore == 0 then
-            -- First time scoring on this mission
-            return "first_place_new"
-        else
-            -- They had a previous score. Check if anyone else had a higher score before.
-            -- If there's only 1 entry (theirs), they were already #1
-            if #missionLeaderboard == 1 then
-                return "first_place_improved" -- Only their score exists, so they were already #1
-            else
-                -- Check if the #2 score belongs to someone else and is lower than their previous best
-                local secondPlace = missionLeaderboard[2]
-                if secondPlace and secondPlace.citizenid ~= citizenid and secondPlace.score < previousBestScore then
-                    return "first_place_improved" -- They were already #1, just improved their score
-                else
-                    return "first_place_new" -- They overtook someone
-                end
-            end
-        end
-    end
-    
-    return "not_first"
 end
+
 -- Fixed unlock progression - only unlock the next sequential mission
 function CheckAndUnlockNextMission(citizenid, currentMissionId, score)
     local nextMissionId = currentMissionId + 1
@@ -325,7 +318,7 @@ function CheckAndUnlockNextMission(citizenid, currentMissionId, score)
     return nil
 end
 
--- Reward logic, with payout and unlock progression
+-- FIXED: Reward logic, with payout and unlock progression
 RegisterNetEvent("driftmission:reward", function(missionId, score)
     local src = source
     local xPlayer = QBCore.Functions.GetPlayer(src)
@@ -335,7 +328,6 @@ RegisterNetEvent("driftmission:reward", function(missionId, score)
     -- Load Config from shared file
     local Config = Config or {}
     if not Config.Missions then
-        -- If you want, you can load config here or require it if needed
         print("[DriftMission] Config.Missions missing. Define Config.Missions in a shared file!")
         return
     end
@@ -362,16 +354,19 @@ RegisterNetEvent("driftmission:reward", function(missionId, score)
         TriggerClientEvent('QBCore:Notify', src, ("You received $%d cash for drifting!%s"):format(reward, bonusText), "success")
     end
 
-    -- Save best score if improved and check leaderboard position
+    -- Check leaderboard position BEFORE updating the score
     local prevBest = GetPlayerBestScore(citizenid, missionId)
     local leaderboardResult = nil
     
     if score > prevBest then
-        -- Check leaderboard position BEFORE updating (pass previous best score)
-        leaderboardResult = CheckLeaderboardPosition(citizenid, missionId, prevBest)
+        -- Check leaderboard position BEFORE updating the score
+        leaderboardResult = CheckLeaderboardPosition(citizenid, missionId, score, prevBest)
         
-        -- Now save the new score
+        -- Now save the new score (this updates the leaderboard)
         SetPlayerBestScore(citizenid, missionId, score)
+        
+        print(string.format("^3[DriftMission DEBUG]^7 Player %s scored %d (prev: %d) on mission %d. Result: %s", 
+            citizenid, score, prevBest, missionId, leaderboardResult or "none"))
     end
 
     -- Handle unlock progression
@@ -382,15 +377,18 @@ RegisterNetEvent("driftmission:reward", function(missionId, score)
         end)
     end
     
-    -- Handle leaderboard bonuses and messages (after unlock message)
+    -- FIXED: Handle leaderboard bonuses and messages
     if leaderboardResult then
         SetTimeout(unlockedMissionId and 6000 or 2000, function() -- 6s if unlock message, 2s otherwise
             if leaderboardResult == "first_place_new" then
                 -- New #1 position - give bonus
-                xPlayer.Functions.AddMoney('cash', 5000, 'drift-leaderboard-bonus')
-                TriggerClientEvent('driftmission:showLeaderboardMessage', src, "new_record", 5000)
+                local bonusAmount = 5000
+                xPlayer.Functions.AddMoney('cash', bonusAmount, 'drift-leaderboard-bonus')
+                print(string.format("^2[DriftMission]^7 Awarded $%d leaderboard bonus to %s for new #1 position", bonusAmount, citizenid))
+                TriggerClientEvent('driftmission:showLeaderboardMessage', src, "new_record", bonusAmount)
             elseif leaderboardResult == "first_place_improved" then
                 -- Improved their own record
+                print(string.format("^2[DriftMission]^7 Player %s improved their #1 record", citizenid))
                 TriggerClientEvent('driftmission:showLeaderboardMessage', src, "improved_record")
             end
         end)
