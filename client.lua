@@ -27,9 +27,13 @@ local comboResetTime = 3000 -- 3 seconds between drifts to maintain combo
 -- Drift result display
 local showDriftResult = false
 local driftResultScore = 0
-local driftResultType = "good" -- "good", "crashed", "spinout"
+local driftResultType = "good" -- "good", "crashed", "spinout", "out_of_zone"
 local driftResultEndTime = 0
 local screenEffectEndTime = 0
+
+-- Out of zone tracking
+local playerInZone = false
+local showOutOfZone = false
 
 -- Thread control variables
 local uiThreadActive = false
@@ -167,13 +171,16 @@ function DrawDriftUI()
     AddTextComponentSubstringPlayerName(string.format("Total: %d", GetTotalScore()))
     EndTextCommandDisplayText(totalScoreX, topY)
     
-    -- Current score and status (fixed position - now in center, only when drifting or showing result)
-    if driftActive or showDriftResult then
+    -- Current score and status (fixed position - now in center, only when drifting, showing result, or out of zone)
+    if driftActive or showDriftResult or showOutOfZone then
         local displayScore = showDriftResult and driftResultScore or math.floor(currentDrift.score)
         local scoreColor = {110, 193, 255, 255} -- Changed to light blue as default
         local displayText = ""
         
-        if showDriftResult or driftActive then
+        if showOutOfZone then
+            scoreColor = {255, 50, 50, 255} -- Red for out of zone
+            displayText = "OUT OF ZONE!"
+        elseif showDriftResult or driftActive then
             if (showDriftResult and driftResultType == "crashed") or (driftActive and currentDrift.crashed) then
                 scoreColor = {255, 50, 50, 255}
                 displayText = "CRASHED!" -- Only show status, no score
@@ -196,8 +203,8 @@ function DrawDriftUI()
         AddTextComponentSubstringPlayerName(displayText)
         EndTextCommandDisplayText(currentScoreX, topY)
         
-        -- Angle indicator bar (only when actively drifting) - made shorter
-        if driftActive and not showDriftResult then
+        -- Angle indicator bar (only when actively drifting and in zone) - made shorter
+        if driftActive and not showDriftResult and not showOutOfZone then
             local barWidth = 0.2 -- Reduced from 0.3 to make it shorter
             local barHeight = 0.015
             local barX = centerX - barWidth/2
@@ -779,6 +786,8 @@ function CancelCurrentMission()
     if missionActive then
         missionActive = false
         showDriftUI = false
+        showOutOfZone = false
+        playerInZone = false
         HideDriftZoneBlip()
         StopDriftDetectionThread()
         StopDebugThread()
@@ -890,6 +899,25 @@ function StartDriftDetectionThread()
                 local mission = Config.Missions[activeMissionId]
                 local ped = PlayerPedId()
                 
+                -- Check if player is in zone
+                local inZone = IsPlayerInDriftZone(mission.Zone, ped)
+                
+                -- Update zone status
+                if inZone ~= playerInZone then
+                    playerInZone = inZone
+                    if not inZone then
+                        showOutOfZone = true
+                        -- End any active drift when leaving zone
+                        if driftActive then
+                            driftActive = false
+                            currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                            driftCombo = 0
+                        end
+                    else
+                        showOutOfZone = false
+                    end
+                end
+                
                 if not IsPedInAnyVehicle(ped, false) then
                     if driftActive then
                         -- End current drift when exiting vehicle
@@ -923,7 +951,6 @@ function StartDriftDetectionThread()
                     end
                 end
                 
-                local inZone = IsPlayerInDriftZone(mission.Zone, ped)
                 local drifting = (currentAngle > 10 and currentSpeed > 15 and inZone) -- Reduced speed requirement to 15mph
                 
                 -- Check combo timeout (reset if too much time between drifts)
@@ -1025,6 +1052,8 @@ function StartDriftDetectionThread()
                 currentAngle = 0
                 currentSpeed = 0
                 driftCombo = 0
+                playerInZone = false
+                showOutOfZone = false
                 -- Sleep longer when not in mission to reduce CPU usage
                 Citizen.Wait(500)
             end
@@ -1067,28 +1096,21 @@ RegisterNetEvent("driftmission:start", function(missionId)
     driftScores = {}
     driftCombo = 0
     showDriftUI = true
+    playerInZone = true
+    showOutOfZone = false
     SetStatusText("")
     
     -- Mission timer thread
     Citizen.CreateThread(function()
-        local lastOutOfZoneMessage = 0
         while missionActive and missionTimer > 0 do
             Wait(1000)
             missionTimer = missionTimer - 1
-            
-            -- Check if player is out of zone and show message more frequently
-            if not IsPlayerInDriftZone(mission.Zone, PlayerPedId()) then
-                local currentTime = GetGameTimer()
-                -- Show message every 3 seconds instead of every 5, and don't depend on timer value
-                if currentTime - lastOutOfZoneMessage >= 3000 then
-                    TempMessage("~r~Return to the drift zone!", 2000)
-                    lastOutOfZoneMessage = currentTime
-                end
-            end
         end
         if missionActive then
             missionActive = false
             showDriftUI = false
+            showOutOfZone = false
+            playerInZone = false
             HideDriftZoneBlip()
             StopDriftDetectionThread()
             StopDebugThread()
@@ -1100,6 +1122,8 @@ end)
 RegisterNetEvent("driftmission:turnin", function()
     HideDriftZoneBlip()
     showDriftUI = false
+    showOutOfZone = false
+    playerInZone = false
     StopDriftDetectionThread()
     StopDebugThread()
     local score = GetTotalScore()
