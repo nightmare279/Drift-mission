@@ -15,6 +15,19 @@ local driftZoneBlip = nil
 local driftZoneBlip_icon = nil
 local driftPolyZones = {}
 
+-- Sprint mission variables
+local sprintMission = false
+local currentCheckpoint = 0
+local checkpointBlips = {}
+local flareObjects = {}
+local startingBlip = nil
+local finishBlip = nil
+local countdownActive = false
+local playerInCorrectDirection = true
+local lastDirectionCheck = 0
+local startFlags = nil
+local finishFlags = nil
+
 -- Enhanced drift tracking
 local currentAngle = 0
 local lastAngle = 0
@@ -39,6 +52,7 @@ local showOutOfZone = false
 local uiThreadActive = false
 local debugThreadActive = false
 local driftDetectionThreadActive = false
+local sprintDetectionThreadActive = false
 
 -- Police dispatch tracking
 local lastCrashDispatch = 0
@@ -73,6 +87,587 @@ RegisterCommand("driftdbg", function()
         StopDebugThread()
     end
 end)
+
+-----------------------------------
+-- Sprint Mission Functions
+-----------------------------------
+
+function CreateFlares(position, heading, distance)
+    local flares = {}
+    
+    -- Calculate left and right positions (perpendicular to heading)
+    local rad = math.rad(heading)
+    -- For left/right positioning, we need to use the perpendicular angle
+    local leftX = position.x + math.sin(rad) * (distance/2)
+    local leftY = position.y - math.cos(rad) * (distance/2)
+    local rightX = position.x - math.sin(rad) * (distance/2)
+    local rightY = position.y + math.cos(rad) * (distance/2)
+    
+    -- Get ground Z coordinates
+    local leftZ = position.z
+    local rightZ = position.z
+    local foundLeft, groundLeft = GetGroundZFor_3dCoord(leftX, leftY, position.z + 10.0, 0)
+    local foundRight, groundRight = GetGroundZFor_3dCoord(rightX, rightY, position.z + 10.0, 0)
+    if foundLeft then leftZ = groundLeft + 0.1 end
+    if foundRight then rightZ = groundRight + 0.1 end
+    
+    -- Create smoke effects instead of flare objects
+    UseParticleFxAssetNextCall("core")
+    local leftSmoke = StartParticleFxLoopedAtCoord("exp_grd_flare", leftX, leftY, leftZ, 0.0, 0.0, 0.0, 1.5, false, false, false, false)
+    
+    UseParticleFxAssetNextCall("core")
+    local rightSmoke = StartParticleFxLoopedAtCoord("exp_grd_flare", rightX, rightY, rightZ, 0.0, 0.0, 0.0, 1.5, false, false, false, false)
+    
+    -- Set smoke color to make them more visible (red)
+    SetParticleFxLoopedColour(leftSmoke, 1.0, 0.0, 0.0, 0)
+    SetParticleFxLoopedColour(rightSmoke, 1.0, 0.0, 0.0, 0)
+    
+    flares.left = leftSmoke
+    flares.right = rightSmoke
+    flares.leftPos = vector3(leftX, leftY, leftZ)
+    flares.rightPos = vector3(rightX, rightY, rightZ)
+    flares.isSmoke = true -- Flag to identify smoke effects
+    
+    print(string.format("^2[DriftMission] Created smoke flares at: Left(%.2f, %.2f, %.2f) Right(%.2f, %.2f, %.2f)", 
+        leftX, leftY, leftZ, rightX, rightY, rightZ))
+    
+    return flares
+end
+
+function RemoveFlares(flares)
+    if flares then
+        if flares.isSmoke then
+            -- Remove smoke effects
+            if flares.left then
+                StopParticleFxLooped(flares.left, 0)
+            end
+            if flares.right then
+                StopParticleFxLooped(flares.right, 0)
+            end
+        else
+            -- Remove objects (for backwards compatibility)
+            if flares.left and DoesEntityExist(flares.left) then
+                DeleteObject(flares.left)
+            end
+            if flares.right and DoesEntityExist(flares.right) then
+                DeleteObject(flares.right)
+            end
+        end
+    end
+end
+
+function CreateRacingFlags(position, heading, distance, flagType)
+    -- flagType: "start" or "finish"
+    -- Create two flags, left and right of the position
+    local flags = {}
+    
+    -- Simple perpendicular calculation (same as flares)
+    local rad = math.rad(heading)
+    local halfDist = distance / 2
+    
+    -- Get the forward direction vector
+    local forwardX = math.sin(rad)
+    local forwardY = math.cos(rad)
+    
+    -- Get perpendicular (left/right) vector by rotating 90 degrees
+    local perpX = -forwardY  -- Rotate 90 degrees: (x,y) -> (-y,x)
+    local perpY = forwardX
+    
+    -- Calculate left and right positions
+    local leftX = position.x + perpX * halfDist
+    local leftY = position.y + perpY * halfDist
+    local rightX = position.x - perpX * halfDist
+    local rightY = position.y - perpY * halfDist
+    
+    -- Get ground Z coordinates
+    local leftZ = position.z
+    local rightZ = position.z
+    local foundLeft, groundLeft = GetGroundZFor_3dCoord(leftX, leftY, position.z + 10.0, 0)
+    local foundRight, groundRight = GetGroundZFor_3dCoord(rightX, rightY, position.z + 10.0, 0)
+    if foundLeft then leftZ = groundLeft end
+    if foundRight then rightZ = groundRight end
+    
+    local flagModel = GetHashKey("prop_flag_us")
+    RequestModel(flagModel)
+    
+    local timeout = 0
+    while not HasModelLoaded(flagModel) and timeout < 50 do
+        Wait(100)
+        timeout = timeout + 1
+    end
+    
+    if not HasModelLoaded(flagModel) then
+        print("^1[DriftMission] Failed to load flag model!")
+        return nil
+    end
+    
+    -- Create left flag
+    local leftFlag = CreateObject(flagModel, leftX, leftY, leftZ, true, true, false)
+    if DoesEntityExist(leftFlag) then
+        SetEntityHeading(leftFlag, heading) -- Use original heading for flag orientation
+        SetEntityAsMissionEntity(leftFlag, true, true)
+        FreezeEntityPosition(leftFlag, true)
+        SetEntityCollision(leftFlag, false, false)
+    end
+    
+    -- Create right flag
+    local rightFlag = CreateObject(flagModel, rightX, rightY, rightZ, true, true, false)
+    if DoesEntityExist(rightFlag) then
+        SetEntityHeading(rightFlag, heading) -- Use original heading for flag orientation
+        SetEntityAsMissionEntity(rightFlag, true, true)
+        FreezeEntityPosition(rightFlag, true)
+        SetEntityCollision(rightFlag, false, false)
+    end
+    
+    flags.left = leftFlag
+    flags.right = rightFlag
+    flags.leftPos = vector3(leftX, leftY, leftZ)
+    flags.rightPos = vector3(rightX, rightY, rightZ)
+    
+    print(string.format("^2[DriftMission] Created %s flags at: Left(%.2f, %.2f, %.2f) Right(%.2f, %.2f, %.2f)", 
+        flagType, leftX, leftY, leftZ, rightX, rightY, rightZ))
+    
+    return flags
+end
+
+function RemoveRacingFlags(flags)
+    if flags then
+        if flags.left and DoesEntityExist(flags.left) then
+            DeleteObject(flags.left)
+        end
+        if flags.right and DoesEntityExist(flags.right) then
+            DeleteObject(flags.right)
+        end
+    end
+end
+
+function CreateRacingFlag(position, heading, flagType)
+    -- flagType: "start" or "finish"
+    local flagModel = GetHashKey("prop_flag_us")  -- US flag instead of UK!
+    RequestModel(flagModel)
+    
+    local timeout = 0
+    while not HasModelLoaded(flagModel) and timeout < 50 do
+        Wait(100)
+        timeout = timeout + 1
+    end
+    
+    if not HasModelLoaded(flagModel) then
+        print("^1[DriftMission] Failed to load flag model!")
+        return nil
+    end
+    
+    -- Get ground Z coordinate
+    local flagZ = position.z
+    local found, groundZ = GetGroundZFor_3dCoord(position.x, position.y, position.z + 10.0, 0)
+    if found then flagZ = groundZ end
+    
+    local flag = CreateObject(flagModel, position.x, position.y, flagZ, true, true, false)
+    
+    if not DoesEntityExist(flag) then
+        print("^1[DriftMission] Failed to create flag object!")
+        return nil
+    end
+    
+    SetEntityHeading(flag, heading)
+    SetEntityAsMissionEntity(flag, true, true)
+    FreezeEntityPosition(flag, true)
+    SetEntityCollision(flag, false, false)
+    
+    print(string.format("^2[DriftMission] Created %s flag at: %.2f, %.2f, %.2f", flagType, position.x, position.y, flagZ))
+    
+    return flag
+end
+
+function RemoveRacingFlag(flag)
+    if flag and DoesEntityExist(flag) then
+        DeleteObject(flag)
+    end
+end
+
+function CreateSprintBlips(mission)
+    -- Create racing flags first (using same distance as flares)
+    local flagDistance = mission.FlareDistance or 8.0
+    startFlags = CreateRacingFlags(mission.StartingPosition, mission.StartingPosition.w, flagDistance, "start")
+    finishFlags = CreateRacingFlags(mission.FinishPosition, mission.FinishPosition.w, flagDistance, "finish")
+    
+    -- Starting position blip
+    if startingBlip then RemoveBlip(startingBlip) end
+    startingBlip = AddBlipForCoord(mission.StartingPosition.x, mission.StartingPosition.y, mission.StartingPosition.z)
+    SetBlipSprite(startingBlip, 38) -- start line
+    SetBlipColour(startingBlip, 2) -- green
+    SetBlipScale(startingBlip, 0.8)
+    SetBlipAsShortRange(startingBlip, false)
+    BeginTextCommandSetBlipName("STRING")
+    AddTextComponentSubstringPlayerName("Sprint Start")
+    EndTextCommandSetBlipName(startingBlip)
+    
+    -- Checkpoint blips
+    for i, checkpoint in ipairs(mission.Checkpoints) do
+        local blip = AddBlipForCoord(checkpoint.position.x, checkpoint.position.y, checkpoint.position.z)
+        SetBlipSprite(blip, checkpoint.blipSprite or 1)
+        SetBlipColour(blip, checkpoint.blipColor or 5)
+        SetBlipScale(blip, 0.7)
+        SetBlipAsShortRange(blip, false)
+        BeginTextCommandSetBlipName("STRING")
+        AddTextComponentSubstringPlayerName("Checkpoint " .. i)
+        EndTextCommandSetBlipName(blip)
+        table.insert(checkpointBlips, blip)
+    end
+    
+    -- Finish position blip
+    if finishBlip then RemoveBlip(finishBlip) end
+    finishBlip = AddBlipForCoord(mission.FinishPosition.x, mission.FinishPosition.y, mission.FinishPosition.z)
+    SetBlipSprite(finishBlip, 38) -- finish line
+    SetBlipColour(finishBlip, 1) -- red
+    SetBlipScale(finishBlip, 0.8)
+    SetBlipAsShortRange(finishBlip, false)
+    BeginTextCommandSetBlipName("STRING")
+    AddTextComponentSubstringPlayerName("Sprint Finish")
+    EndTextCommandSetBlipName(finishBlip)
+end
+
+function RemoveSprintBlips()
+    if startingBlip then RemoveBlip(startingBlip) startingBlip = nil end
+    if finishBlip then RemoveBlip(finishBlip) finishBlip = nil end
+    for _, blip in ipairs(checkpointBlips) do
+        if blip then RemoveBlip(blip) end
+    end
+    checkpointBlips = {}
+    
+    -- Remove racing flags
+    if startFlags then RemoveRacingFlags(startFlags) startFlags = nil end
+    if finishFlags then RemoveRacingFlags(finishFlags) finishFlags = nil end
+end
+
+function UpdateActiveFlares(mission)
+    -- Remove all existing flares first
+    for i, flares in pairs(flareObjects) do
+        if flares then
+            print(string.format("^1[DEBUG] Removing flares for checkpoint %d", i))
+            RemoveFlares(flares)
+        end
+    end
+    flareObjects = {} -- Clear the table completely
+    
+    -- Only show flares for next 2 checkpoints
+    local nextCheckpoint = currentCheckpoint + 1
+    for i = nextCheckpoint, math.min(nextCheckpoint + 1, #mission.Checkpoints) do
+        local checkpoint = mission.Checkpoints[i]
+        if checkpoint then
+            print(string.format("^2[DEBUG] Creating flares for checkpoint %d", i))
+            local flares = CreateFlares(checkpoint.position, checkpoint.position.w, mission.FlareDistance or 8.0)
+            if flares then
+                flareObjects[i] = flares
+            end
+        end
+    end
+    
+    print(string.format("^3[DEBUG] Active flares count: %d", #flareObjects))
+end
+
+function IsPlayerBetweenFlares(flares)
+    if not flares or not flares.leftPos or not flares.rightPos then return false end
+    
+    local playerPos = GetEntityCoords(PlayerPedId())
+    local leftPos = flares.leftPos
+    local rightPos = flares.rightPos
+    
+    -- Calculate if player is between the flares using cross product
+    local lineVec = vector3(rightPos.x - leftPos.x, rightPos.y - leftPos.y, 0)
+    local playerVec = vector3(playerPos.x - leftPos.x, playerPos.y - leftPos.y, 0)
+    
+    -- Check if player is within the line segment
+    local dot = playerVec.x * lineVec.x + playerVec.y * lineVec.y
+    local lineLength = #lineVec
+    
+    if dot < 0 or dot > lineLength * lineLength then
+        return false -- Player is outside the line segment
+    end
+    
+    -- Check distance from line
+    local distance = #(playerPos - vector3(leftPos.x, leftPos.y, playerPos.z))
+    local distance2 = #(playerPos - vector3(rightPos.x, rightPos.y, playerPos.z))
+    
+    return math.min(distance, distance2) < (GetConfigValue("CheckpointTriggerDistance") or 12.0)
+end
+
+function GetConfigValue(key)
+    if activeMissionId and Config.Missions[activeMissionId] then
+        return Config.Missions[activeMissionId][key]
+    end
+    return nil
+end
+
+function CheckPlayerDirection(mission)
+    local currentTime = GetGameTimer()
+    if currentTime - lastDirectionCheck < 500 then return end -- Check every 500ms
+    lastDirectionCheck = currentTime
+    
+    local nextCheckpointIndex = currentCheckpoint + 1
+    local nextCheckpoint = mission.Checkpoints[nextCheckpointIndex]
+    if not nextCheckpoint and currentCheckpoint < #mission.Checkpoints then
+        nextCheckpoint = mission.FinishPosition
+    end
+    
+    if not nextCheckpoint then return end
+    
+    local ped = PlayerPedId()
+    if not IsPedInAnyVehicle(ped, false) then return end
+    
+    local vehicle = GetVehiclePedIsIn(ped, false)
+    local playerPos = GetEntityCoords(ped)
+    local vehicleHeading = GetEntityHeading(vehicle)
+    
+    -- Calculate direction to next checkpoint
+    local checkpointPos = vector3(nextCheckpoint.x or nextCheckpoint.position.x, 
+                                 nextCheckpoint.y or nextCheckpoint.position.y, 
+                                 nextCheckpoint.z or nextCheckpoint.position.z)
+    local directionVec = checkpointPos - playerPos
+    local targetHeading = math.deg(math.atan2(directionVec.y, directionVec.x)) + 90
+    
+    -- Normalize headings
+    if targetHeading < 0 then targetHeading = targetHeading + 360 end
+    if vehicleHeading < 0 then vehicleHeading = vehicleHeading + 360 end
+    
+    -- Calculate angle difference
+    local angleDiff = math.abs(targetHeading - vehicleHeading)
+    if angleDiff > 180 then
+        angleDiff = 360 - angleDiff
+    end
+    
+    local maxAngle = mission.OutOfZoneAngle or 150
+    local wasInCorrectDirection = playerInCorrectDirection
+    playerInCorrectDirection = angleDiff <= maxAngle
+    
+    -- Update out of zone status
+    if wasInCorrectDirection ~= playerInCorrectDirection then
+        showOutOfZone = not playerInCorrectDirection
+    end
+end
+
+function StartCountdown(callback)
+    countdownActive = true
+    local ped = PlayerPedId()
+    local vehicle = IsPedInAnyVehicle(ped, false) and GetVehiclePedIsIn(ped, false) or nil
+    
+    if vehicle then
+        FreezeEntityPosition(vehicle, true)
+        SetVehicleEngineOn(vehicle, false, true, true)
+    end
+    
+    for i = 5, 1, -1 do
+        if not countdownActive then break end
+        
+        SetStatusText("~r~" .. i)
+        PlaySoundFrontend(-1, "CHECKPOINT_PERFECT", "HUD_MINI_GAME_SOUNDSET", true)
+        Wait(1000)
+    end
+    
+    if countdownActive then
+        SetStatusText("~g~GO!")
+        PlaySoundFrontend(-1, "RACE_PLACED", "HUD_AWARDS", true)
+        
+        if vehicle then
+            FreezeEntityPosition(vehicle, false)
+            SetVehicleEngineOn(vehicle, true, true, false)
+        end
+        
+        Wait(1000)
+        SetStatusText("")
+        countdownActive = false
+        
+        if callback then callback() end
+    end
+end
+
+-- Sprint Detection Thread
+function StartSprintDetectionThread()
+    if sprintDetectionThreadActive then return end
+    sprintDetectionThreadActive = true
+    
+    Citizen.CreateThread(function()
+        while sprintDetectionThreadActive do
+            Wait(100)
+            
+            if sprintMission and missionActive and missionTimer > 0 and activeMissionId then
+                local mission = Config.Missions[activeMissionId]
+                local ped = PlayerPedId()
+                
+                -- Check player direction
+                CheckPlayerDirection(mission)
+                
+                -- Check if player is in vehicle for drift detection
+                if IsPedInAnyVehicle(ped, false) then
+                    local veh = GetVehiclePedIsIn(ped, false)
+                    currentSpeed = GetEntitySpeed(veh) * 2.23694
+                    
+                    -- Calculate drift angle
+                    local heading = GetEntityHeading(veh)
+                    local vel = GetEntityVelocity(veh)
+                    local v = math.sqrt(vel.x^2 + vel.y^2)
+                    if v > 1.5 then
+                        local carDir = math.rad(heading + 90)
+                        local velDir = math.atan2(vel.y, vel.x)
+                        currentAngle = math.abs((math.deg(velDir - carDir) + 180) % 360 - 180)
+                    else
+                        currentAngle = 0
+                    end
+                    
+                    -- Drift detection logic (similar to regular drift missions)
+                    local drifting = (currentAngle > 10 and currentSpeed > 15 and playerInCorrectDirection)
+                    
+                    if drifting then
+                        if not driftActive then
+                            driftActive = true
+                            currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                        end
+                        
+                        currentDrift.duration = currentDrift.duration + 0.1
+                        
+                        -- Check for spinout
+                        if currentAngle >= 135 and not currentDrift.spinout then
+                            currentDrift.spinout = true
+                            currentDrift.score = currentDrift.score * 0.3
+                        end
+                        
+                        -- Accumulate score if not crashed or spun out
+                        if not currentDrift.crashed and not currentDrift.spinout then
+                            local gear = GetVehicleCurrentGear(veh)
+                            local reverseMultiplier = gear == 0 and 0.25 or 1.0
+                            local angleMultiplier = 1.0
+                            if currentAngle > 45 then angleMultiplier = 1.5 end
+                            if currentAngle > 90 then angleMultiplier = 2.0 end
+                            
+                            local speedMultiplier = math.min(currentSpeed / 60, 2.0)
+                            local comboMultiplier = 1.0 + (driftCombo * 0.1)
+                            
+                            local scoreGain = currentAngle * currentSpeed * 0.002 * reverseMultiplier * angleMultiplier * speedMultiplier * comboMultiplier
+                            currentDrift.score = currentDrift.score + scoreGain
+                        end
+                        
+                        -- Check for crashes
+                        if HasEntityCollidedWithAnything(veh) then
+                            if not currentDrift.crashed then
+                                currentDrift.crashed = true
+                                currentDrift.score = 0
+                            end
+                        end
+                        
+                        -- End drift if spun out
+                        if currentDrift.spinout then
+                            Wait(500)
+                            local finalScore = currentDrift.score
+                            if finalScore > 0 then
+                                table.insert(driftScores, finalScore)
+                            end
+                            ShowDriftResult(finalScore, "spinout")
+                            driftCombo = 0
+                            driftActive = false
+                            currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                        end
+                    else
+                        if driftActive then
+                            -- End current drift
+                            local finalScore = currentDrift.score
+                            local resultType = "good"
+                            
+                            if currentDrift.crashed then
+                                resultType = "crashed"
+                                driftCombo = 0
+                            elseif currentDrift.spinout then
+                                resultType = "spinout"
+                                driftCombo = 0
+                            else
+                                if finalScore > 0 then
+                                    table.insert(driftScores, finalScore)
+                                    driftCombo = driftCombo + 1
+                                else
+                                    driftCombo = 0
+                                end
+                            end
+                            
+                            ShowDriftResult(finalScore, resultType)
+                            driftActive = false
+                            currentDrift = {score = 0, duration = 0, crashed = false, spinout = false}
+                        end
+                    end
+                end
+                
+                -- Check checkpoint progression
+                local nextCheckpointIndex = currentCheckpoint + 1
+                if nextCheckpointIndex <= #mission.Checkpoints then
+                    local checkpoint = mission.Checkpoints[nextCheckpointIndex]
+                    local flares = flareObjects[nextCheckpointIndex]
+                    
+                    if flares and IsPlayerBetweenFlares(flares) then
+                        -- Checkpoint reached!
+                        currentCheckpoint = nextCheckpointIndex
+                        missionTimer = missionTimer + checkpoint.timeBonus
+                        
+                        -- Remove this checkpoint's flares
+                        RemoveFlares(flares)
+                        flareObjects[nextCheckpointIndex] = nil
+                        
+                        -- Update active flares for next checkpoints
+                        UpdateActiveFlares(mission)
+                        
+                        -- Show checkpoint notification
+                        TempMessage(string.format("~g~Checkpoint %d reached!\n~b~+%d seconds", nextCheckpointIndex, checkpoint.timeBonus), 2000)
+                        PlaySoundFrontend(-1, "CHECKPOINT_PERFECT", "HUD_MINI_GAME_SOUNDSET", true)
+                        
+                        -- Check if this was the last checkpoint
+                        if currentCheckpoint >= #mission.Checkpoints then
+                            -- Now player needs to reach finish line
+                            TempMessage("~y~Head to the finish line!", 3000)
+                        end
+                    end
+                elseif currentCheckpoint >= #mission.Checkpoints then
+                    -- Check finish line
+                    local playerPos = GetEntityCoords(PlayerPedId())
+                    local finishPos = vector3(mission.FinishPosition.x, mission.FinishPosition.y, mission.FinishPosition.z)
+                    
+                    if #(playerPos - finishPos) < (mission.CheckpointTriggerDistance or 12.0) then
+                        -- Mission complete!
+                        CompleteMission()
+                    end
+                end
+            else
+                Wait(500)
+            end
+        end
+    end)
+end
+
+function StopSprintDetectionThread()
+    sprintDetectionThreadActive = false
+end
+
+function CompleteMission()
+    missionActive = false
+    sprintMission = false
+    showDriftUI = false
+    showOutOfZone = false
+    playerInCorrectDirection = true
+    
+    -- Clean up ALL flares with detailed logging
+    print("^1[DEBUG] Starting mission completion cleanup...")
+    for i, flares in pairs(flareObjects) do
+        if flares then
+            print(string.format("^1[DEBUG] Removing flares for checkpoint %d", i))
+            RemoveFlares(flares)
+        end
+    end
+    flareObjects = {} -- Clear the entire table
+    print("^1[DEBUG] Flares cleanup completed")
+    
+    RemoveSprintBlips()
+    StopSprintDetectionThread()
+    StopDebugThread()
+    
+    TempMessage("~g~Sprint completed!\n~b~Return to the Drift King to submit your score.", 4000)
+    PlaySoundFrontend(-1, "RACE_PLACED", "HUD_AWARDS", true)
+end
 
 -----------------------------------
 -- NUI Callbacks
@@ -179,7 +774,7 @@ function DrawDriftUI()
         
         if showOutOfZone then
             scoreColor = {255, 50, 50, 255} -- Red for out of zone
-            displayText = "OUT OF ZONE!"
+            displayText = sprintMission and "WRONG DIRECTION!" or "OUT OF ZONE!"
         elseif showDriftResult or driftActive then
             if (showDriftResult and driftResultType == "crashed") or (driftActive and currentDrift.crashed) then
                 scoreColor = {255, 50, 50, 255}
@@ -248,6 +843,23 @@ function DrawDriftUI()
                 AddTextComponentSubstringPlayerName(string.format("x%d (%.1fx)", driftCombo, comboMultiplier))
                 EndTextCommandDisplayText(comboX, comboY)
             end
+        end
+    end
+    
+    -- Sprint mission specific UI
+    if sprintMission then
+        -- Show checkpoint progress
+        local mission = Config.Missions[activeMissionId]
+        if mission then
+            local progressY = topY + 0.12
+            SetTextFont(4)
+            SetTextScale(0.5, 0.5)
+            SetTextColour(255, 255, 255, 255)
+            SetTextOutline()
+            SetTextCentre(true)
+            BeginTextCommandDisplayText("STRING")
+            AddTextComponentSubstringPlayerName(string.format("Checkpoint: %d/%d", currentCheckpoint, #mission.Checkpoints))
+            EndTextCommandDisplayText(centerX, progressY)
         end
     end
 end
@@ -499,6 +1111,42 @@ function DrawZoneDebug(zone)
     end
 end
 
+function DrawSprintDebug()
+    if not sprintMission or not activeMissionId then return end
+    
+    local mission = Config.Missions[activeMissionId]
+    if not mission then return end
+    
+    -- Draw checkpoints
+    for i, checkpoint in ipairs(mission.Checkpoints) do
+        local color = i <= currentCheckpoint and {0, 255, 0, 150} or {255, 255, 0, 150}
+        if i == currentCheckpoint + 1 then
+            color = {255, 100, 100, 200} -- Next checkpoint in red
+        end
+        
+        DrawMarker(1, checkpoint.position.x, checkpoint.position.y, checkpoint.position.z - 1.0, 
+                  0, 0, 0, 0, 0, 0, 3.0, 3.0, 2.0, 
+                  color[1], color[2], color[3], color[4], 
+                  false, false, 2, false, nil, nil, false)
+    end
+    
+    -- Draw finish line
+    local finishColor = currentCheckpoint >= #mission.Checkpoints and {0, 255, 0, 200} or {100, 100, 100, 150}
+    DrawMarker(1, mission.FinishPosition.x, mission.FinishPosition.y, mission.FinishPosition.z - 1.0,
+              0, 0, 0, 0, 0, 0, 4.0, 4.0, 2.0,
+              finishColor[1], finishColor[2], finishColor[3], finishColor[4],
+              false, false, 2, false, nil, nil, false)
+              
+    -- Draw flares
+    for i, flares in ipairs(flareObjects) do
+        if flares and flares.leftPos and flares.rightPos then
+            DrawLine(flares.leftPos.x, flares.leftPos.y, flares.leftPos.z + 1.0,
+                    flares.rightPos.x, flares.rightPos.y, flares.rightPos.z + 1.0,
+                    255, 0, 0, 255)
+        end
+    end
+end
+
 -- Debug Thread Control Functions
 function StartDebugThread()
     if debugThreadActive then return end
@@ -508,9 +1156,11 @@ function StartDebugThread()
         while debugThreadActive do
             Citizen.Wait(0)
             if Config.DebugZone and activeMissionId and Config.Missions[activeMissionId] then
-                local zone = Config.Missions[activeMissionId].Zone
-                if zone then 
-                    DrawZoneDebug(zone) 
+                local mission = Config.Missions[activeMissionId]
+                if sprintMission then
+                    DrawSprintDebug()
+                elseif mission.Zone then 
+                    DrawZoneDebug(mission.Zone) 
                 else
                     Citizen.Wait(300)
                 end
@@ -608,6 +1258,17 @@ AddEventHandler('onResourceStop', function(resource)
         StopUIThread()
         StopDebugThread()
         StopDriftDetectionThread()
+        StopSprintDetectionThread()
+        
+        -- Clean up sprint mission objects
+        for _, flares in ipairs(flareObjects) do
+            RemoveFlares(flares)
+        end
+        flareObjects = {}
+        RemoveSprintBlips()
+        startFlags = nil
+        finishFlags = nil
+        
         -- Close NUI if open
         if leaderboardOpen then
             SetNuiFocus(false, false)
@@ -642,10 +1303,14 @@ function RefreshDriftMissionDialog()
                 close = false,
                 onSelect = function()
                     -- Show mission details dialog
+                    local missionTypeText = mission.Type == "sprint" and "Sprint Mission" or "Drift Mission"
                     local detailText = string.format(
-                        "%s\n\nDetails:\nTime Limit: %d seconds\nReward Rate: $%.2f per point\nBest Score: %d points\n\n%s",
-                        mission.Name or "Drift Mission",
-                        mission.MissionTime or 60,
+                        "%s - %s\n\nDetails:\n%s\nReward Rate: $%.2f per point\nBest Score: %d points\n\n%s",
+                        mission.Name or "Mission",
+                        missionTypeText,
+                        mission.Type == "sprint" and 
+                            string.format("Initial Time: %d seconds\nCheckpoints: %d", mission.InitialTime or 20, #(mission.Checkpoints or {})) or
+                            string.format("Time Limit: %d seconds", mission.MissionTime or 60),
                         mission.RewardPerScore or 0,
                         bestScore,
                         mission.Description or "No description available."
@@ -688,7 +1353,7 @@ function RefreshDriftMissionDialog()
             -- Show locked missions with unlock requirements
             table.insert(missionBtns, {
                 label = string.format("LOCKED %s (Requires %d points)", 
-                    mission.Name or ('Drift Mission '..missionId), 
+                    mission.Name or ('Mission '..missionId), 
                     mission.UnlockScore
                 ),
                 close = false,
@@ -717,7 +1382,7 @@ function RefreshDriftMissionDialog()
         id = 'driftking_missions',
         job = 'Drift King',
         name = 'Slider Sam',
-        text = "Choose your drift mission:",
+        text = "Choose your mission:",
         buttons = missionBtns,
     }
 end
@@ -785,15 +1450,33 @@ end
 function CancelCurrentMission()
     if missionActive then
         missionActive = false
+        sprintMission = false
         showDriftUI = false
         showOutOfZone = false
         playerInZone = false
+        playerInCorrectDirection = true
+        countdownActive = false
+        
         HideDriftZoneBlip()
+        
+        -- Clean up ALL sprint mission objects
+        for i = 1, 10 do -- Check more indices to be safe
+            if flareObjects[i] then
+                RemoveFlares(flareObjects[i])
+                flareObjects[i] = nil
+            end
+        end
+        flareObjects = {} -- Clear the entire table
+        
+        RemoveSprintBlips()
+        
         StopDriftDetectionThread()
+        StopSprintDetectionThread()
         StopDebugThread()
         driftScores = {}
         activeMissionId = nil
         driftCombo = 0
+        currentCheckpoint = 0
         TempMessage("~r~Mission cancelled!", 2000)
     end
 end
@@ -819,7 +1502,7 @@ end)
 RegisterNetEvent("driftmission:unlocked", function(missionId)
     missionId = tonumber(missionId)
     playerProgress[missionId] = true
-    TempMessage("~g~New drift mission unlocked!", 3500)
+    TempMessage("~g~New mission unlocked!", 3500)
     if driftNpcSpawned then SpawnDriftNpc() end
 end)
 
@@ -895,7 +1578,7 @@ function StartDriftDetectionThread()
     Citizen.CreateThread(function()
         while driftDetectionThreadActive do
             Wait(10)
-            if missionActive and missionTimer > 0 and activeMissionId then
+            if missionActive and missionTimer > 0 and activeMissionId and not sprintMission then
                 local mission = Config.Missions[activeMissionId]
                 local ped = PlayerPedId()
                 
@@ -1074,49 +1757,136 @@ RegisterNetEvent("driftmission:start", function(missionId)
         return 
     end
     
+    -- Check mission type
+    local isSprintMission = mission.Type == "sprint"
+    
     -- Notify server about mission start for police presence check
     TriggerServerEvent("driftmission:missionStart", missionId)
     
-    ShowDriftZoneBlip(missionId)
-    SetStatusText("~b~Head to the drift area. The timer will start when you arrive.")
-    
-    -- Start necessary threads for mission
-    StartDriftDetectionThread()
-    if debugEnabled then
-        StartDebugThread()
-    end
-    
-    -- Wait until IN the zone (poly or circle)
-    while not IsPlayerInDriftZone(mission.Zone, PlayerPedId()) do
-        Wait(500)
-    end
-    missionActive = true
-    activeMissionId = missionId
-    missionTimer = mission.MissionTime
-    driftScores = {}
-    driftCombo = 0
-    showDriftUI = true
-    playerInZone = true
-    showOutOfZone = false
-    SetStatusText("")
-    
-    -- Mission timer thread
-    Citizen.CreateThread(function()
-        while missionActive and missionTimer > 0 do
-            Wait(1000)
-            missionTimer = missionTimer - 1
+    if isSprintMission then
+        -- Sprint mission logic
+        sprintMission = true
+        activeMissionId = missionId
+        currentCheckpoint = 0
+        driftScores = {}
+        driftCombo = 0
+        playerInCorrectDirection = true
+        showOutOfZone = false
+        
+        -- Create blips for all checkpoints and finish
+        CreateSprintBlips(mission)
+        
+        -- Set initial status
+        SetStatusText("~b~Head to the starting line to begin the sprint.")
+        
+        -- Start detection threads
+        StartSprintDetectionThread()
+        if debugEnabled then
+            StartDebugThread()
         end
-        if missionActive then
-            missionActive = false
-            showDriftUI = false
-            showOutOfZone = false
-            playerInZone = false
-            HideDriftZoneBlip()
-            StopDriftDetectionThread()
-            StopDebugThread()
-            TempMessage("~b~Time's up! Return to the Drift King to submit your score.", 4000)
+        
+        -- Wait until player reaches starting position
+        local startPos = vector3(mission.StartingPosition.x, mission.StartingPosition.y, mission.StartingPosition.z)
+        while #(GetEntityCoords(PlayerPedId()) - startPos) > 15.0 do
+            Wait(500)
         end
-    end)
+        
+        -- Position and lock vehicle at starting line
+        local ped = PlayerPedId()
+        if IsPedInAnyVehicle(ped, false) then
+            local vehicle = GetVehiclePedIsIn(ped, false)
+            SetEntityCoords(vehicle, mission.StartingPosition.x, mission.StartingPosition.y, mission.StartingPosition.z, false, false, false, true)
+            SetEntityHeading(vehicle, mission.StartingPosition.w)
+        end
+        
+        -- Start countdown
+        StartCountdown(function()
+            -- Mission officially starts after countdown
+            missionActive = true
+            missionTimer = mission.InitialTime or 20
+            showDriftUI = true
+            
+            -- Update flares for first 2 checkpoints
+            UpdateActiveFlares(mission)
+            
+            SetStatusText("")
+            TempMessage("~g~Sprint started! Reach the checkpoints before time runs out!", 3000)
+            
+            -- Sprint timer thread
+            Citizen.CreateThread(function()
+                while missionActive and missionTimer > 0 do
+                    Wait(1000)
+                    missionTimer = missionTimer - 1
+                end
+                if missionActive then
+                    -- Time's up!
+                    missionActive = false
+                    sprintMission = false
+                    showDriftUI = false
+                    showOutOfZone = false
+                    playerInCorrectDirection = true
+                    
+                    -- Clean up
+                    for _, flares in ipairs(flareObjects) do
+                        RemoveFlares(flares)
+                    end
+                    flareObjects = {}
+                    RemoveSprintBlips()
+                    StopSprintDetectionThread()
+                    StopDebugThread()
+                    
+                    driftScores = {}
+                    activeMissionId = nil
+                    driftCombo = 0
+                    currentCheckpoint = 0
+                    TempMessage("~r~Time's up! Mission failed.", 4000)
+                end
+            end)
+        end)
+    else
+        -- Regular drift mission logic
+        sprintMission = false
+        ShowDriftZoneBlip(missionId)
+        SetStatusText("~b~Head to the drift area. The timer will start when you arrive.")
+        
+        -- Start necessary threads for mission
+        StartDriftDetectionThread()
+        if debugEnabled then
+            StartDebugThread()
+        end
+        
+        -- Wait until IN the zone (poly or circle)
+        while not IsPlayerInDriftZone(mission.Zone, PlayerPedId()) do
+            Wait(500)
+        end
+        missionActive = true
+        activeMissionId = missionId
+        missionTimer = mission.MissionTime
+        driftScores = {}
+        driftCombo = 0
+        showDriftUI = true
+        playerInZone = true
+        showOutOfZone = false
+        SetStatusText("")
+        
+        -- Mission timer thread
+        Citizen.CreateThread(function()
+            while missionActive and missionTimer > 0 do
+                Wait(1000)
+                missionTimer = missionTimer - 1
+            end
+            if missionActive then
+                missionActive = false
+                showDriftUI = false
+                showOutOfZone = false
+                playerInZone = false
+                HideDriftZoneBlip()
+                StopDriftDetectionThread()
+                StopDebugThread()
+                TempMessage("~b~Time's up! Return to the Drift King to submit your score.", 4000)
+            end
+        end)
+    end
 end)
 
 RegisterNetEvent("driftmission:turnin", function()
@@ -1124,17 +1894,31 @@ RegisterNetEvent("driftmission:turnin", function()
     showDriftUI = false
     showOutOfZone = false
     playerInZone = false
+    playerInCorrectDirection = true
+    
+    -- Clean up sprint mission objects
+    for _, flares in ipairs(flareObjects) do
+        RemoveFlares(flares)
+    end
+    flareObjects = {}
+    RemoveSprintBlips()
+    
     StopDriftDetectionThread()
+    StopSprintDetectionThread()
     StopDebugThread()
+    
     local score = GetTotalScore()
     if not missionActive and score > 0 and activeMissionId then
         local mission = Config.Missions[activeMissionId]
         local reward = math.floor(score * mission.RewardPerScore)
-        TempMessage(("~b~You turned in your score!\nTotal drift points: ~y~%d\n~g~Cash reward: $%d"):format(score, reward), 3000)
+        local missionTypeText = mission.Type == "sprint" and "sprint" or "drift"
+        TempMessage(("~b~You turned in your score!\nTotal %s points: ~y~%d\n~g~Cash reward: $%d"):format(missionTypeText, score, reward), 3000)
         TriggerServerEvent("driftmission:reward", activeMissionId, score)
         driftScores = {}
         activeMissionId = nil
         driftCombo = 0
+        currentCheckpoint = 0
+        sprintMission = false
     else
         TempMessage("~r~No score to turn in!", 1500)
     end
