@@ -9,7 +9,12 @@ shared_scripts {
     'config.lua',
     '@ox_lib/init.lua'
 }
-client_script 'client.lua'
+
+client_scripts {
+    'client.lua',
+    'modules/*.lua'
+}
+
 server_scripts {
     'unlocks.lua',
     'server.lua'
