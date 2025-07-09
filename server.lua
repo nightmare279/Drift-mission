@@ -2,6 +2,7 @@ local QBCore = exports['qb-core']:GetCoreObject()
 
 local unlockFile = "drift_mission_unlocks.json"
 local activeMissions = {} -- Track active missions for police presence checking
+local activeRentals = {} -- Track active rentals
 
 -- Utility: Load unlocks from file
 function GetUnlockData()
@@ -398,6 +399,141 @@ RegisterNetEvent("driftmission:reward", function(missionId, score)
     activeMissions[citizenid] = nil
 end)
 
+-----------------------------------
+-- Rental System Events
+-----------------------------------
+
+-- Handle rental request
+RegisterNetEvent("driftmission:rentVehicle", function()
+    local src = source
+    local xPlayer = QBCore.Functions.GetPlayer(src)
+    if not xPlayer then return end
+    local citizenid = xPlayer.PlayerData.citizenid
+    
+    -- Check if player already has a rental
+    if activeRentals[citizenid] then
+        TriggerClientEvent('driftmission:rentalDenied', src, "You already have an active rental!")
+        return
+    end
+    
+    -- Check if player has enough cash
+    local cashBalance = xPlayer.Functions.GetMoney('cash')
+    if cashBalance < 500 then
+        TriggerClientEvent('driftmission:rentalDenied', src, "You need $500 cash for the rental deposit!")
+        return
+    end
+    
+    -- Take initial payment
+    xPlayer.Functions.RemoveMoney('cash', 500, 'drift-car-rental-initial')
+    
+    -- Create rental record
+    activeRentals[citizenid] = {
+        startTime = os.time(),
+        paymentIntervals = 0,
+        playerId = src
+    }
+    
+    -- Start rental timer
+    CreateThread(function()
+        local rentalData = activeRentals[citizenid]
+        while rentalData and activeRentals[citizenid] do
+            Wait(60000) -- Check every minute
+            
+            -- Check if rental still exists
+            if not activeRentals[citizenid] then break end
+            
+            local elapsedMinutes = (os.time() - rentalData.startTime) / 60
+            
+            -- Check for 5-minute intervals
+            local intervalsNeeded = math.floor(elapsedMinutes / 5)
+            if intervalsNeeded > rentalData.paymentIntervals then
+                -- Time for another payment
+                rentalData.paymentIntervals = intervalsNeeded
+                
+                local player = QBCore.Functions.GetPlayer(rentalData.playerId)
+                if player then
+                    player.Functions.RemoveMoney('bank', 100, 'drift-car-rental-recurring')
+                    TriggerClientEvent('QBCore:Notify', rentalData.playerId, "$100 rental fee charged to your bank account.", "primary")
+                end
+            end
+            
+            -- Check for 30-minute expiration
+            if elapsedMinutes >= 30 then
+                -- Force expire the rental
+                if activeRentals[citizenid] then
+                    activeRentals[citizenid] = nil
+                end
+                break
+            end
+        end
+    end)
+    
+    TriggerClientEvent('driftmission:rentalApproved', src)
+    print(string.format("^2[DriftMission]^7 Player %s started a vehicle rental", citizenid))
+end)
+
+-- Handle rental refund (if spawn point was blocked)
+RegisterNetEvent("driftmission:refundRental", function()
+    local src = source
+    local xPlayer = QBCore.Functions.GetPlayer(src)
+    if not xPlayer then return end
+    local citizenid = xPlayer.PlayerData.citizenid
+    
+    -- Clean up rental record
+    if activeRentals[citizenid] then
+        activeRentals[citizenid] = nil
+    end
+    
+    -- Refund the payment
+    xPlayer.Functions.AddMoney('cash', 500, 'drift-car-rental-refund')
+    TriggerClientEvent('QBCore:Notify', src, "Your $500 rental fee has been refunded.", "success")
+    print(string.format("^2[DriftMission]^7 Refunded rental fee to player %s (spawn blocked)", citizenid))
+end)
+
+-- Handle rental payment charges
+RegisterNetEvent("driftmission:chargeRentalPayment", function()
+    local src = source
+    local xPlayer = QBCore.Functions.GetPlayer(src)
+    if not xPlayer then return end
+    local citizenid = xPlayer.PlayerData.citizenid
+    
+    -- Verify rental exists
+    if not activeRentals[citizenid] then return end
+    
+    -- Charge bank account
+    xPlayer.Functions.RemoveMoney('bank', 100, 'drift-car-rental-recurring')
+    TriggerClientEvent('QBCore:Notify', src, "$100 rental fee charged to your bank account.", "primary")
+end)
+
+-- Handle rental return
+RegisterNetEvent("driftmission:returnRental", function()
+    local src = source
+    local xPlayer = QBCore.Functions.GetPlayer(src)
+    if not xPlayer then return end
+    local citizenid = xPlayer.PlayerData.citizenid
+    
+    -- Clean up rental
+    if activeRentals[citizenid] then
+        activeRentals[citizenid] = nil
+        print(string.format("^2[DriftMission]^7 Player %s returned their rental vehicle", citizenid))
+    end
+end)
+
+-- Handle rental expiration with penalty
+RegisterNetEvent("driftmission:rentalExpired", function()
+    local src = source
+    local xPlayer = QBCore.Functions.GetPlayer(src)
+    if not xPlayer then return end
+    local citizenid = xPlayer.PlayerData.citizenid
+    
+    -- Clean up rental and charge penalty
+    if activeRentals[citizenid] then
+        activeRentals[citizenid] = nil
+        xPlayer.Functions.RemoveMoney('bank', 5000, 'drift-car-rental-penalty')
+        print(string.format("^1[DriftMission]^7 Player %s's rental expired! $5000 penalty charged.", citizenid))
+    end
+end)
+
 -- Clean up on player disconnect
 AddEventHandler('playerDropped', function()
     local src = source
@@ -405,8 +541,14 @@ AddEventHandler('playerDropped', function()
     if xPlayer then
         local citizenid = xPlayer.PlayerData.citizenid
         activeMissions[citizenid] = nil
+        
+        -- Clean up rental if active
+        if activeRentals[citizenid] then
+            activeRentals[citizenid] = nil
+            print(string.format("^3[DriftMission]^7 Cleaned up rental for disconnected player %s", citizenid))
+        end
     end
 end)
 
 -- Optional: Log on start
-print("^2[DriftMission]^7 server loaded and ready with police dispatch integration and leaderboard system.")
+print("^2[DriftMission]^7 server loaded and ready with police dispatch integration, leaderboard system, and vehicle rental.")

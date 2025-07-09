@@ -6,6 +6,7 @@ description 'Drift job'
 lua54 'yes'
 
 shared_scripts {
+    'fixDeleteVehicle.lua',
     'config.lua',
     '@ox_lib/init.lua'
 }
@@ -18,5 +19,6 @@ server_scripts {
 ui_page 'nui/index.html'
 
 files {
+    'fixDeleteVehicle.lua',
     'nui/index.html'
 }

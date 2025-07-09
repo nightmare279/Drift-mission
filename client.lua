@@ -62,6 +62,14 @@ local dispatchCooldown = 30000 -- 30 seconds between dispatches
 -- NUI Management
 local leaderboardOpen = false
 
+-- Rental System Variables
+local rentalActive = false
+local rentedVehicle = nil
+local rentalStartTime = 0
+local rentalPaymentTimer = 0
+local rentalWarningShown = false
+local rentalThreadActive = false
+
 -- Initialize NUI as hidden
 Citizen.CreateThread(function()
     Wait(1000) -- Wait for NUI to load
@@ -87,6 +95,143 @@ RegisterCommand("driftdbg", function()
         StopDebugThread()
     end
 end)
+
+-----------------------------------
+-- Rental System Functions
+-----------------------------------
+
+function SpawnRentalVehicle()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    
+    -- Find a suitable spawn location near the NPC
+    local spawnCoords = vector4(245.2082, -758.2352, 33.9265, 339.5312) -- Adjust as needed
+    
+    -- Request model
+    local model = GetHashKey("z15dragon")
+    RequestModel(model)
+    
+    local timeout = 0
+    while not HasModelLoaded(model) and timeout < 50 do
+        Wait(100)
+        timeout = timeout + 1
+    end
+    
+    if not HasModelLoaded(model) then
+        TriggerEvent('QBCore:Notify', "Failed to spawn rental vehicle!", "error")
+        return false
+    end
+    
+    -- Create vehicle
+    rentedVehicle = CreateVehicle(model, spawnCoords.x, spawnCoords.y, spawnCoords.z, spawnCoords.w, true, true)
+    
+    if not DoesEntityExist(rentedVehicle) then
+        TriggerEvent('QBCore:Notify', "Failed to spawn rental vehicle!", "error")
+        return false
+    end
+    
+    -- Set vehicle properties
+    SetVehicleNumberPlateText(rentedVehicle, "DRIFT" .. math.random(100, 999))
+    SetEntityAsMissionEntity(rentedVehicle, true, true)
+    SetVehicleEngineOn(rentedVehicle, true, true, false)
+    
+    -- Put player in vehicle
+    TaskWarpPedIntoVehicle(ped, rentedVehicle, -1)
+    
+    -- Set model as no longer needed
+    SetModelAsNoLongerNeeded(model)
+    
+    return true
+end
+
+function StartRentalThread()
+    if rentalThreadActive then return end
+    rentalThreadActive = true
+    
+    Citizen.CreateThread(function()
+        while rentalThreadActive and rentalActive do
+            Wait(1000) -- Check every second
+            
+            if not rentalActive then break end -- Exit if rental ended
+            
+            local currentTime = GetGameTimer()
+            local elapsedTime = (currentTime - rentalStartTime) / 1000 -- Convert to seconds
+            local elapsedMinutes = elapsedTime / 60
+            
+            -- Check for 5-minute payment intervals
+            if math.floor(elapsedMinutes / 5) > rentalPaymentTimer then
+                rentalPaymentTimer = math.floor(elapsedMinutes / 5)
+                TriggerServerEvent('driftmission:chargeRentalPayment')
+            end
+            
+            -- Check for 25-minute warning
+            if elapsedMinutes >= 25 and not rentalWarningShown then
+                rentalWarningShown = true
+                TriggerEvent('QBCore:Notify', "WARNING: Repo man dispatched! Return the vehicle immediately or face a $5000 fine!", "error", 10000)
+                PlaySoundFrontend(-1, "CHECKPOINT_MISSED", "HUD_MINI_GAME_SOUNDSET", true)
+            end
+            
+            -- Check for 30-minute expiration
+            if elapsedMinutes >= 30 then
+                EndRental(true) -- Force end with penalty
+                break -- Exit the thread
+            end
+        end
+        rentalThreadActive = false
+    end)
+end
+
+function EndRental(forcePenalty)
+    rentalActive = false
+    rentalThreadActive = false
+    
+    if forcePenalty then
+        -- Delete vehicle and charge penalty
+        if DoesEntityExist(rentedVehicle) then
+            DeleteEntity(rentedVehicle)
+        end
+        TriggerServerEvent('driftmission:rentalExpired')
+        TriggerEvent('QBCore:Notify', "Rental expired! Vehicle repossessed and $5000 fine charged!", "error", 7000)
+    else
+        -- Normal return
+        if DoesEntityExist(rentedVehicle) then
+            DeleteEntity(rentedVehicle)
+        end
+        TriggerServerEvent('driftmission:returnRental')
+        TriggerEvent('QBCore:Notify', "Thank you for returning the drift car!", "success")
+    end
+    
+    -- Reset rental variables
+    rentedVehicle = nil
+    rentalStartTime = 0
+    rentalPaymentTimer = 0
+    rentalWarningShown = false
+end
+
+function IsSpawnPointClear(coords, radius)
+    local vehicles = GetGamePool('CVehicle')
+    for _, vehicle in ipairs(vehicles) do
+        local vehicleCoords = GetEntityCoords(vehicle)
+        local distance = #(coords - vehicleCoords)
+        if distance <= radius then
+            return false
+        end
+    end
+    return true
+end
+
+function IsNearRentedVehicle()
+    if not rentedVehicle or not DoesEntityExist(rentedVehicle) then
+        return false
+    end
+    
+    local ped = PlayerPedId()
+    local pedCoords = GetEntityCoords(ped)
+    local vehCoords = GetEntityCoords(rentedVehicle)
+    local distance = #(pedCoords - vehCoords)
+    
+    return distance <= 20.0 -- 20 yards
+end
 
 -----------------------------------
 -- Sprint Mission Functions
@@ -840,6 +985,27 @@ function DrawDriftUI()
             EndTextCommandDisplayText(centerX, progressY)
         end
     end
+    
+    -- Rental timer display
+    if rentalActive and rentedVehicle then
+        local currentTime = GetGameTimer()
+        local elapsedTime = (currentTime - rentalStartTime) / 1000
+        local remainingTime = (30 * 60) - elapsedTime -- 30 minutes in seconds
+        
+        if remainingTime > 0 then
+            local rentalColor = remainingTime > 300 and {255, 255, 255, 255} or {255, 100, 100, 255} -- Red if < 5 min
+            local rentalY = topY + 0.18
+            
+            SetTextFont(4)
+            SetTextScale(0.4, 0.4)
+            SetTextColour(rentalColor[1], rentalColor[2], rentalColor[3], rentalColor[4])
+            SetTextOutline()
+            SetTextCentre(true)
+            BeginTextCommandDisplayText("STRING")
+            AddTextComponentSubstringPlayerName(string.format("Rental Time: %02d:%02d", math.floor(remainingTime / 60), math.floor(remainingTime % 60)))
+            EndTextCommandDisplayText(centerX, rentalY)
+        end
+    end
 end
 
 -- UI Thread Control Functions
@@ -850,7 +1016,7 @@ function StartUIThread()
     Citizen.CreateThread(function()
         while uiThreadActive do
             Citizen.Wait(0)
-            if showDriftUI then
+            if showDriftUI or rentalActive then
                 DrawDriftUI()
                 
                 -- Handle drift result display timeout
@@ -1247,6 +1413,11 @@ AddEventHandler('onResourceStop', function(resource)
         startFlags = nil
         finishFlags = nil
         
+        -- Clean up rental if active
+        if rentalActive then
+            EndRental(false)
+        end
+        
         -- Close NUI if open
         if leaderboardOpen then
             SetNuiFocus(false, false)
@@ -1365,6 +1536,29 @@ function RefreshDriftMissionDialog()
     }
 end
 
+function RefreshRentalDialog()
+    Dialog[3] = {
+        id = 'driftking_rental',
+        job = 'Drift King',
+        name = 'Slider Sam',
+        text = "Listen up! You're getting my prized Z15 Dragon. Take care of her!\n\nTerms:\n• $500 upfront payment\n• $100 every 5 minutes from your bank\n• Maximum rental: 30 minutes\n• Return within 20 yards of me\n• Fail to return = $5000 fine\n\nYou break it, you buy it!",
+        buttons = {
+            {
+                label = 'Accept Terms',
+                close = true,
+                onSelect = function()
+                    TriggerServerEvent('driftmission:rentVehicle')
+                end,
+            },
+            {
+                label = '< Back',
+                nextDialog = 'driftking_main',
+                close = false,
+            },
+        },
+    }
+end
+
 function RefreshDriftMainDialog()
     local mainBtns = {
         {
@@ -1379,6 +1573,35 @@ function RefreshDriftMainDialog()
             end,
         },
     }
+    
+    -- Add rental options
+    if not rentalActive then
+        table.insert(mainBtns, {
+            label = 'Rent a Drift Car ($500)',
+            nextDialog = 'driftking_rental',
+            close = false,
+        })
+    else
+        -- Show return option if near vehicle
+        if IsNearRentedVehicle() then
+            table.insert(mainBtns, {
+                label = 'Return Drift Car',
+                close = true,
+                onSelect = function()
+                    EndRental(false)
+                end,
+            })
+        else
+            table.insert(mainBtns, {
+                label = 'Return Drift Car (Vehicle must be within 20 yards)',
+                close = false,
+                nextDialog = 'driftking_main',
+                onSelect = function()
+                    TempMessage("~r~Bring the rental car closer to return it!", 3000)
+                end,
+            })
+        end
+    end
     
     -- Add cancel mission option if currently active
     if missionActive and activeMissionId then
@@ -1417,6 +1640,7 @@ end
 
 function ShowDriftKingDialog()
     RefreshDriftMissionDialog()
+    RefreshRentalDialog()
     RefreshDriftMainDialog()
     exports.bl_dialog:showDialog({
         ped = driftNpc,
@@ -1500,6 +1724,37 @@ RegisterNetEvent("driftmission:showLeaderboardMessage", function(messageType, bo
     end
 end)
 
+-- Rental Events
+RegisterNetEvent("driftmission:rentalApproved", function()
+    -- Define spawn location
+    local spawnCoords = vector4(241.8, -760.5, 34.5, 160.0) -- Adjust as needed
+    
+    -- Check if spawn point is clear
+    if not IsSpawnPointClear(vector3(spawnCoords.x, spawnCoords.y, spawnCoords.z), 6.3) then
+        TriggerEvent('QBCore:Notify', "The parking spot is currently taken. Try again in a moment.", "error")
+        -- Refund the payment
+        TriggerServerEvent('driftmission:refundRental')
+        return
+    end
+    
+    if SpawnRentalVehicle() then
+        rentalActive = true
+        rentalStartTime = GetGameTimer()
+        rentalPaymentTimer = 0
+        rentalWarningShown = false
+        StartRentalThread()
+        StartUIThread() -- Ensure UI shows rental timer
+        TriggerEvent('QBCore:Notify', "Enjoy your rental! Return within 30 minutes.", "success")
+    else
+        -- Refund if spawn failed
+        TriggerServerEvent('driftmission:refundRental')
+    end
+end)
+
+RegisterNetEvent("driftmission:rentalDenied", function(reason)
+    TriggerEvent('QBCore:Notify', reason, "error")
+end)
+
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
     TriggerServerEvent('driftmission:requestUnlocks')
     -- Ensure drift zone is created for newly loaded players
@@ -1516,6 +1771,13 @@ AddEventHandler('QBCore:Client:OnPlayerLoaded', function()
         end
         TriggerServerEvent('driftmission:requestUnlocks')
     end)
+end)
+
+-- Handle player disconnect/logout
+RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
+    if rentalActive then
+        EndRental(false) -- End rental without penalty on logout
+    end
 end)
 
 -----------------------------------
