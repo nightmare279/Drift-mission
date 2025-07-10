@@ -105,10 +105,10 @@ function SpawnRentalVehicle()
     local coords = GetEntityCoords(ped)
     
     -- Find a suitable spawn location near the NPC
-    local spawnCoords = vector4(245.2082, -758.2352, 33.9265, 339.5312) -- Adjust as needed
+    local spawnCoords = vector4(244.9506, -758.4701, 34.6396, 339.3598) -- Adjust as needed
     
     -- Request model
-    local model = GetHashKey("z15dragon")
+    local model = GetHashKey("sentinelsg3d")
     RequestModel(model)
     
     local timeout = 0
@@ -131,7 +131,7 @@ function SpawnRentalVehicle()
     end
     
     -- Set vehicle properties
-    SetVehicleNumberPlateText(rentedVehicle, "DRIFT" .. math.random(100, 999))
+    SetVehicleNumberPlateText(rentedVehicle, "62BDS162")
     SetEntityAsMissionEntity(rentedVehicle, true, true)
     SetVehicleEngineOn(rentedVehicle, true, true, false)
     
@@ -856,6 +856,30 @@ function GetSpeedColor(speed)
 end
 
 function DrawDriftUI()
+    if not showDriftUI and not rentalActive then return end
+    
+    -- Show rental timer if active (even without mission)
+    if rentalActive and rentedVehicle and not showDriftUI then
+        local currentTime = GetGameTimer()
+        local elapsedTime = (currentTime - rentalStartTime) / 1000
+        local remainingTime = (30 * 60) - elapsedTime -- 30 minutes in seconds
+        
+        if remainingTime > 0 then
+            local rentalColor = remainingTime > 300 and {255, 255, 255, 255} or {255, 100, 100, 255} -- Red if < 5 min
+            
+            SetTextFont(4)
+            SetTextScale(0.5, 0.5)
+            SetTextColour(rentalColor[1], rentalColor[2], rentalColor[3], rentalColor[4])
+            SetTextOutline()
+            SetTextCentre(true)
+            BeginTextCommandDisplayText("STRING")
+            AddTextComponentSubstringPlayerName(string.format("Rental Time: %02d:%02d", math.floor(remainingTime / 60), math.floor(remainingTime % 60)))
+            EndTextCommandDisplayText(0.5, 0.02)
+        end
+        return -- Exit early if only showing rental timer
+    end
+    
+    -- Regular drift UI display (during missions)
     if not showDriftUI then return end
     
     -- Simplified UI - single horizontal line at top center, fixed positions
@@ -986,8 +1010,8 @@ function DrawDriftUI()
         end
     end
     
-    -- Rental timer display
-    if rentalActive and rentedVehicle then
+    -- Rental timer display (during missions with rental)
+    if rentalActive and rentedVehicle and showDriftUI then
         local currentTime = GetGameTimer()
         local elapsedTime = (currentTime - rentalStartTime) / 1000
         local remainingTime = (30 * 60) - elapsedTime -- 30 minutes in seconds
@@ -1016,8 +1040,15 @@ function StartUIThread()
     Citizen.CreateThread(function()
         while uiThreadActive do
             Citizen.Wait(0)
-            if showDriftUI or rentalActive then
-                DrawDriftUI()
+            if showDriftUI or rentalActive or missionDisplayText ~= "" then
+                if showDriftUI or rentalActive then
+                    DrawDriftUI()
+                end
+                
+                -- Draw mission text if present (separate from drift UI)
+                if missionDisplayText ~= "" then
+                    DrawMissionText(missionDisplayText)
+                end
                 
                 -- Handle drift result display timeout
                 if showDriftResult and GetGameTimer() > driftResultEndTime then
@@ -1035,8 +1066,6 @@ function StartUIThread()
                         DrawRect(0.5, 0.5, 1.0, 1.0, 255, 150, 0, 80)
                     end
                 end
-            elseif missionDisplayText ~= "" then
-                DrawMissionText(missionDisplayText)
             else
                 Citizen.Wait(100)
             end
@@ -1131,6 +1160,7 @@ end
 
 function TempMessage(txt, time)
     SetStatusText(txt)
+    StartUIThread() -- Ensure UI thread is running
     CreateThread(function()
         Wait(time or 5000) -- Increased default from 1200 to 5000
         SetStatusText("")
@@ -1363,7 +1393,12 @@ function SpawnDriftNpc()
             canInteract = function() return true end,
             action = function()
                 TriggerServerEvent('driftmission:requestUnlocks')
-                Citizen.SetTimeout(250, ShowDriftKingDialog)
+                Citizen.SetTimeout(250, function()
+                    RefreshDriftMissionDialog()
+                    RefreshRentalDialog()
+                    RefreshDriftMainDialog() -- This will check for active missions
+                    ShowDriftKingDialog()
+                end)
             end,
         },
     }, 1.5)
@@ -1478,6 +1513,8 @@ function RefreshDriftMissionDialog()
                                     close = true,
                                     onSelect = function()
                                         TriggerEvent("driftmission:start", missionId)
+                                        -- Set flags to indicate mission is starting
+                                        activeMissionId = missionId
                                     end,
                                 },
                                 {
@@ -1531,7 +1568,7 @@ function RefreshDriftMissionDialog()
         id = 'driftking_missions',
         job = 'Drift King',
         name = 'Slider Sam',
-        text = "Choose your mission:",
+        text = "Choose your Drift Run:",
         buttons = missionBtns,
     }
 end
@@ -1541,7 +1578,7 @@ function RefreshRentalDialog()
         id = 'driftking_rental',
         job = 'Drift King',
         name = 'Slider Sam',
-        text = "Listen up! You're getting my prized Z15 Dragon. Take care of her!\n\nTerms:\n• $500 upfront payment\n• $100 every 5 minutes from your bank\n• Maximum rental: 30 minutes\n• Return within 20 yards of me\n• Fail to return = $5000 fine\n\nYou break it, you buy it!",
+        text = "Listen up! You're getting my prized drift car. Take care of her!\n\nHeres my terms:\n• $500 upfront payment\n• $1000 every 5 minutes from your bank\n• Maximum rental: 30 minutes\n• Return within 20 yards of me\n• Fail to return = $5000 fine\n\nYou break it, you buy it!",
         buttons = {
             {
                 label = 'Accept Terms',
@@ -1560,19 +1597,31 @@ function RefreshRentalDialog()
 end
 
 function RefreshDriftMainDialog()
-    local mainBtns = {
-        {
-            label = "Let's Drift",
-            nextDialog = 'driftking_missions',
-        },
-        {
-            label = 'View Leaderboard',
+    local mainBtns = {}
+    
+    -- Add cancel mission option if currently active (replaces Let's Drift)
+    if missionActive or activeMissionId then
+        table.insert(mainBtns, {
+            label = 'Cancel Current Mission',
             close = true,
             onSelect = function()
-                OpenLeaderboard()
+                CancelCurrentMission()
             end,
-        },
-    }
+        })
+    else
+        table.insert(mainBtns, {
+            label = "Let's Drift",
+            nextDialog = 'driftking_missions',
+        })
+    end
+    
+    table.insert(mainBtns, {
+        label = 'View Leaderboard',
+        close = true,
+        onSelect = function()
+            OpenLeaderboard()
+        end,
+    })
     
     -- Add rental options
     if not rentalActive then
@@ -1603,19 +1652,8 @@ function RefreshDriftMainDialog()
         end
     end
     
-    -- Add cancel mission option if currently active
-    if missionActive and activeMissionId then
-        table.insert(mainBtns, 1, {
-            label = 'Cancel Current Mission',
-            close = true,
-            onSelect = function()
-                CancelCurrentMission()
-            end,
-        })
-    end
-    
     if not missionActive and activeMissionId and GetTotalScore() > 0 then
-        table.insert(mainBtns, #mainBtns, {
+        table.insert(mainBtns, {
             label = string.format('Turn In Score (%d points)', GetTotalScore()),
             close = true,
             onSelect = function()
@@ -1633,7 +1671,7 @@ function RefreshDriftMainDialog()
         id = 'driftking_main',
         job = 'Drift King',
         name = 'Slider Sam',
-        text = "Ready to burn rubber? What do you want to do?",
+        text = "They call me Slider Sam ‘cause I get more sideways than a mustang leaving a car meet! You wanna drift?          Tell me what you want to do",
         buttons = mainBtns,
     }
 end
@@ -1650,7 +1688,7 @@ function ShowDriftKingDialog()
 end
 
 function CancelCurrentMission()
-    if missionActive then
+    if missionActive or activeMissionId then
         missionActive = false
         sprintMission = false
         showDriftUI = false
@@ -1679,7 +1717,7 @@ function CancelCurrentMission()
         activeMissionId = nil
         driftCombo = 0
         currentCheckpoint = 0
-        TempMessage("~r~Mission cancelled!", 2000)
+        TempMessage("~r~Drift Run cancelled!", 2000)
     end
 end
 
@@ -1704,7 +1742,7 @@ end)
 RegisterNetEvent("driftmission:unlocked", function(missionId)
     missionId = tonumber(missionId)
     playerProgress[missionId] = true
-    TempMessage("~g~New mission unlocked!", 3500)
+    TempMessage("~g~New Drift Run Unlocked!", 3500)
     if driftNpcSpawned then SpawnDriftNpc() end
 end)
 
@@ -1730,7 +1768,7 @@ RegisterNetEvent("driftmission:rentalApproved", function()
     local spawnCoords = vector4(241.8, -760.5, 34.5, 160.0) -- Adjust as needed
     
     -- Check if spawn point is clear
-    if not IsSpawnPointClear(vector3(spawnCoords.x, spawnCoords.y, spawnCoords.z), 6.3) then
+    if not IsSpawnPointClear(vector3(spawnCoords.x, spawnCoords.y, spawnCoords.z), 3.0) then
         TriggerEvent('QBCore:Notify', "The parking spot is currently taken. Try again in a moment.", "error")
         -- Refund the payment
         TriggerServerEvent('driftmission:refundRental')
@@ -1993,7 +2031,7 @@ RegisterNetEvent("driftmission:start", function(missionId)
     missionId = tonumber(missionId) or 1
     local mission = Config.Missions[missionId]
     if missionActive then 
-        TempMessage("~r~Already on a mission!", 1200)
+        TempMessage("~r~Already on a Drift Run!", 1200)
         return 
     end
     
@@ -2018,6 +2056,7 @@ RegisterNetEvent("driftmission:start", function(missionId)
         
         -- Set initial status
         SetStatusText("~b~Head to the starting line to begin the sprint.")
+        StartUIThread() -- Ensure UI thread is running
         
         -- Start detection threads
         StartSprintDetectionThread()
@@ -2079,15 +2118,17 @@ RegisterNetEvent("driftmission:start", function(missionId)
                     activeMissionId = nil
                     driftCombo = 0
                     currentCheckpoint = 0
-                    TempMessage("~r~Time's up! Mission failed.", 4000)
+                    TempMessage("~r~Time's up! Drift Run failed.", 4000)
                 end
             end)
         end)
     else
         -- Regular drift mission logic
         sprintMission = false
+        activeMissionId = missionId -- Set this early so we can cancel
         ShowDriftZoneBlip(missionId)
         SetStatusText("~b~Head to the drift area. The timer will start when you arrive.")
+        StartUIThread() -- Ensure UI thread is running
         
         -- Start necessary threads for mission
         StartDriftDetectionThread()
@@ -2098,9 +2139,12 @@ RegisterNetEvent("driftmission:start", function(missionId)
         -- Wait until IN the zone (poly or circle)
         while not IsPlayerInDriftZone(mission.Zone, PlayerPedId()) do
             Wait(500)
+            -- Check if mission was cancelled while waiting
+            if not activeMissionId then
+                return
+            end
         end
         missionActive = true
-        activeMissionId = missionId
         missionTimer = mission.MissionTime
         driftScores = {}
         driftCombo = 0
@@ -2155,7 +2199,7 @@ RegisterNetEvent("driftmission:turnin", function()
         TempMessage(("~b~You turned in your score!\nTotal %s points: ~y~%d\n~g~Cash reward: $%d"):format(missionTypeText, score, reward), 3000)
         TriggerServerEvent("driftmission:reward", activeMissionId, score)
         driftScores = {}
-        activeMissionId = nil
+        activeMissionId = nil  -- Clear this so Let's Drift returns
         driftCombo = 0
         currentCheckpoint = 0
         sprintMission = false

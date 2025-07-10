@@ -452,8 +452,8 @@ RegisterNetEvent("driftmission:rentVehicle", function()
                 
                 local player = QBCore.Functions.GetPlayer(rentalData.playerId)
                 if player then
-                    player.Functions.RemoveMoney('bank', 100, 'drift-car-rental-recurring')
-                    TriggerClientEvent('QBCore:Notify', rentalData.playerId, "$100 rental fee charged to your bank account.", "primary")
+                    player.Functions.RemoveMoney('bank', 1000, 'drift-car-rental-recurring')
+                    TriggerClientEvent('QBCore:Notify', rentalData.playerId, "$1000 rental fee charged to your bank account.", "primary")
                 end
             end
             
@@ -501,8 +501,8 @@ RegisterNetEvent("driftmission:chargeRentalPayment", function()
     if not activeRentals[citizenid] then return end
     
     -- Charge bank account
-    xPlayer.Functions.RemoveMoney('bank', 100, 'drift-car-rental-recurring')
-    TriggerClientEvent('QBCore:Notify', src, "$100 rental fee charged to your bank account.", "primary")
+    xPlayer.Functions.RemoveMoney('bank', 1000, 'drift-car-rental-recurring')
+    TriggerClientEvent('QBCore:Notify', src, "$1000 rental fee charged to your bank account.", "primary")
 end)
 
 -- Handle rental return
