@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drift Leaderboard</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+        
+        body { 
+            margin: 0; 
+            padding: 0; 
+            font-family: 'Orbitron', monospace; 
+            overflow: hidden; 
+            background: transparent !important; 
+        }
+        
+        #overlay { 
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+            right: 0; 
+            bottom: 0; 
+            width: 100vw; 
+            height: 100vh; 
+            background: rgba(0, 0, 0, 0.4); 
+            display: none; 
+            z-index: 9999; 
+        }
+        
+        #leaderboard { 
+            width: 800px; 
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: linear-gradient(135deg, rgba(10, 10, 10, 0.95) 0%, rgba(26, 26, 46, 0.95) 50%, rgba(22, 33, 62, 0.95) 100%);
+            border-radius: 24px; 
+            box-shadow: 0 8px 40px rgba(0, 212, 255, 0.4); 
+            animation: fadeInCenter 0.7s; 
+            overflow: hidden; 
+            border: 3px solid #00d4ff;
+            color: #00d4ff;
+            height: 600px;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        #leaderboard.closing {
+            animation: fadeOutCenter 0.5s forwards;
+        }
+        
+        .header { 
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between; 
+            padding: 24px 28px 0 28px; 
+        }
+        
+        .header h1 { 
+            flex: 1; 
+            color: #00d4ff; 
+            font-size: 2.2rem; 
+            margin: 0; 
+            text-align: center; 
+            text-shadow: 0 0 20px #00d4ff; 
+            letter-spacing: 0.02em;
+            font-weight: 900;
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+        
+        @keyframes glow {
+            from { text-shadow: 0 0 20px #00d4ff; }
+            to { text-shadow: 0 0 30px #00d4ff, 0 0 40px #00d4ff; }
+        }
+        
+        .close { 
+            background: linear-gradient(45deg, #00d4ff, #0099cc); 
+            border: none; 
+            font-size: 1.1rem; 
+            color: #0a0a0a; 
+            cursor: pointer; 
+            transition: all 0.3s; 
+            width: 35px;
+            height: 35px;
+            border-radius: 50%;
+            font-weight: bold;
+        }
+        
+        .close:hover { 
+            background: linear-gradient(45deg, #66d4ff, #00d4ff);
+            transform: scale(1.1);
+        }
+        
+        .subtitle { 
+            text-align: center; 
+            color: #66b3ff; 
+            margin-bottom: 20px; 
+            font-size: 1rem; 
+            padding: 0 28px;
+        }
+        
+        .mission-tabs { 
+            display: flex; 
+            justify-content: center; 
+            gap: 8px; 
+            margin-bottom: 20px; 
+            flex-wrap: wrap; 
+            padding: 0 28px;
+        }
+        
+        .mission-tab { 
+            background: linear-gradient(45deg, #1a1a2e, #16213e); 
+            border: 2px solid #00d4ff; 
+            color: #00d4ff; 
+            padding: 10px 20px; 
+            border-radius: 20px; 
+            cursor: pointer; 
+            transition: all 0.3s ease; 
+            font-family: 'Orbitron', monospace; 
+            font-weight: 700; 
+            text-transform: uppercase; 
+            font-size: 0.9rem; 
+        }
+        
+        .mission-tab:hover { 
+            background: linear-gradient(45deg, #00d4ff22, #00d4ff33); 
+            transform: translateY(-2px); 
+        }
+        
+        .mission-tab.active { 
+            background: linear-gradient(45deg, #00d4ff, #0099cc); 
+            color: #0a0a0a; 
+        }
+        
+        .leaderboard-content { 
+            flex: 1; 
+            background: rgba(16, 33, 62, 0.4); 
+            border: 2px solid #00d4ff; 
+            border-radius: 15px; 
+            margin: 0 28px 28px 28px; 
+            padding: 15px; 
+            overflow: hidden; 
+            position: relative; 
+            min-height: 0;
+        }
+        
+        .leaderboard-content::before { 
+            content: ''; 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            right: 0; 
+            height: 2px; 
+            background: linear-gradient(90deg, transparent, #00d4ff, transparent); 
+            animation: scan 3s linear infinite; 
+        }
+        
+        @keyframes scan { 
+            0% { transform: translateX(-100%); } 
+            100% { transform: translateX(100%); } 
+        }
+        
+        .leaderboard-list { 
+            height: 100%; 
+            overflow-y: auto; 
+            padding-right: 10px; 
+        }
+        
+        .leaderboard-list::-webkit-scrollbar { 
+            width: 8px; 
+        }
+        
+        .leaderboard-list::-webkit-scrollbar-track { 
+            background: rgba(0, 212, 255, 0.1); 
+            border-radius: 4px; 
+        }
+        
+        .leaderboard-list::-webkit-scrollbar-thumb { 
+            background: linear-gradient(180deg, #00d4ff, #0099cc); 
+            border-radius: 4px; 
+        }
+        
+        .leaderboard-entry { 
+            display: flex; 
+            align-items: center; 
+            padding: 12px; 
+            margin-bottom: 8px; 
+            background: linear-gradient(90deg, rgba(0, 212, 255, 0.05), rgba(0, 212, 255, 0.1)); 
+            border: 1px solid rgba(0, 212, 255, 0.3); 
+            border-radius: 10px; 
+            transition: all 0.3s ease; 
+            position: relative; 
+        }
+        
+        .leaderboard-entry::before { 
+            content: ''; 
+            position: absolute; 
+            left: 0; 
+            top: 0; 
+            bottom: 0; 
+            width: 3px; 
+            background: linear-gradient(180deg, #00d4ff, #0099cc); 
+        }
+        
+        .leaderboard-entry:hover { 
+            background: linear-gradient(90deg, rgba(0, 212, 255, 0.1), rgba(0, 212, 255, 0.2)); 
+            border-color: #00d4ff; 
+            transform: translateX(3px); 
+        }
+        
+        .rank { 
+            font-size: 1.3rem; 
+            font-weight: 900; 
+            min-width: 50px; 
+            text-align: center; 
+            margin-right: 15px; 
+        }
+        
+        .rank.gold { color: #ffd700; text-shadow: 0 0 10px #ffd700; }
+        .rank.silver { color: #c0c0c0; text-shadow: 0 0 10px #c0c0c0; }
+        .rank.bronze { color: #cd7f32; text-shadow: 0 0 10px #cd7f32; }
+        
+        .player-info { 
+            flex: 1; 
+            display: flex; 
+            flex-direction: column; 
+        }
+        
+        .player-name { 
+            font-size: 1.1rem; 
+            font-weight: 700; 
+            color: #ffffff; 
+            margin-bottom: 3px; 
+        }
+        
+        .player-details { 
+            font-size: 0.8rem; 
+            color: #66b3ff; 
+            opacity: 0.8; 
+        }
+        
+        .score { 
+            font-size: 1.5rem; 
+            font-weight: 900; 
+            color: #00d4ff; 
+            text-align: right; 
+            min-width: 100px; 
+            text-shadow: 0 0 8px #00d4ff; 
+        }
+        
+        .no-data { 
+            text-align: center; 
+            padding: 40px; 
+            color: #66b3ff; 
+            font-size: 1rem; 
+        }
+        
+        .loading { 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 150px; 
+            flex-direction: column; 
+        }
+        
+        .loading-spinner { 
+            width: 40px; 
+            height: 40px; 
+            border: 3px solid rgba(0, 212, 255, 0.3); 
+            border-top: 3px solid #00d4ff; 
+            border-radius: 50%; 
+            animation: spin 1s linear infinite; 
+            margin-bottom: 15px; 
+        }
+        
+        @keyframes spin { 
+            0% { transform: rotate(0deg); } 
+            100% { transform: rotate(360deg); } 
+        }
+        
+        #overlay.closing {
+            animation: fadeOutOverlay 0.5s forwards;
+        }
+        
+        @keyframes fadeInCenter { 
+            from { 
+                opacity: 0; 
+                transform: translate(-50%, -50%) scale(0.8); 
+            } 
+            to { 
+                opacity: 1; 
+                transform: translate(-50%, -50%) scale(1); 
+            } 
+        }
+        
+        @keyframes fadeOutCenter { 
+            from { 
+                opacity: 1; 
+                transform: translate(-50%, -50%) scale(1); 
+            } 
+            to { 
+                opacity: 0; 
+                transform: translate(-50%, -50%) scale(0.8); 
+            } 
+        }
+        
+        @keyframes fadeOutOverlay {
+            from { 
+                opacity: 1; 
+            }
+            to { 
+                opacity: 0; 
+            }
+        }
+        
+        @keyframes fadeIn { 
+            from { opacity: 0; transform: translateY(20px); } 
+            to { opacity: 1; transform: translateY(0); } 
+        }
+        
+        .fade-in { 
+            animation: fadeIn 0.5s; 
+        }
+    </style>
+</head>
+<body>
+<div id="overlay">
+    <div id="leaderboard" class="fade-in">
+        <div class="header">
+            <div style="width: 35px;"></div> <!-- Spacer for centering -->
+            <h1>DRIFT LEADERBOARD</h1>
+            <button class="close" onclick="closeLeaderboard()">×</button>
+        </div>
+        <p class="subtitle">Top Performers • Live Rankings</p>
+        <div class="mission-tabs" id="missionTabs"></div>
+        <div class="leaderboard-content">
+            <div class="leaderboard-list" id="leaderboardList">
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>Loading leaderboard data...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let currentMission = 1;
+let leaderboardData = {};
+let missions = {};
+
+window.addEventListener('message', function(event) {
+    const data = event.data;
+    
+    if (data.type === 'showLeaderboard') {
+        document.getElementById('overlay').style.display = 'block';
+        leaderboardData = data.leaderboardData || {};
+        missions = data.missions || {};
+        currentMission = data.currentMission || 1;
+        
+        createMissionTabs();
+        displayLeaderboard(currentMission);
+    } else if (data.type === 'hideLeaderboard') {
+        document.getElementById('overlay').style.display = 'none';
+    }
+});
+
+function createMissionTabs() {
+    const tabsContainer = document.getElementById('missionTabs');
+    tabsContainer.innerHTML = '';
+    
+    Object.keys(missions).forEach(missionId => {
+        const mission = missions[missionId];
+        const tab = document.createElement('div');
+        tab.className = `mission-tab ${missionId == currentMission ? 'active' : ''}`;
+        tab.textContent = mission.Name || `Mission ${missionId}`;
+        tab.onclick = () => switchMission(missionId);
+        tabsContainer.appendChild(tab);
+    });
+}
+
+function switchMission(missionId) {
+    currentMission = missionId;
+    
+    document.querySelectorAll('.mission-tab').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    event.target.classList.add('active');
+    
+    displayLeaderboard(missionId);
+}
+
+function displayLeaderboard(missionId) {
+    const listContainer = document.getElementById('leaderboardList');
+    const missionData = leaderboardData[missionId] || [];
+    
+    if (missionData.length === 0) {
+        listContainer.innerHTML = `
+            <div class="no-data">
+                <p>No scores recorded yet for this mission.</p>
+                <p>Be the first to set a record!</p>
+            </div>
+        `;
+        return;
+    }
+    
+    listContainer.innerHTML = '';
+    
+    missionData.forEach((entry, index) => {
+        const rank = index + 1;
+        const entryElement = document.createElement('div');
+        entryElement.className = 'leaderboard-entry';
+        
+        let rankClass = '';
+        if (rank === 1) rankClass = 'gold';
+        else if (rank === 2) rankClass = 'silver';
+        else if (rank === 3) rankClass = 'bronze';
+        
+        entryElement.innerHTML = `
+            <div class="rank ${rankClass}">#${rank}</div>
+            <div class="player-info">
+                <div class="player-name">${entry.playerName}</div>
+                <div class="player-details">
+                    ${entry.completionTime ? `Completed: ${entry.completionTime}` : 'Recent score'}
+                </div>
+            </div>
+            <div class="score">${entry.score.toLocaleString()}</div>
+        `;
+        
+        listContainer.appendChild(entryElement);
+    });
+}
+
+function closeLeaderboard() {
+    // Add closing animation classes
+    document.getElementById('overlay').classList.add('closing');
+    document.getElementById('leaderboard').classList.add('closing');
+    
+    // Wait for animation to finish before hiding
+    setTimeout(() => {
+        document.getElementById('overlay').style.display = 'none';
+        // Remove classes for next time
+        document.getElementById('overlay').classList.remove('closing');
+        document.getElementById('leaderboard').classList.remove('closing');
+        
+        fetch(`https://${GetParentResourceName()}/closeLeaderboard`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+            body: JSON.stringify({})
+        });
+    }, 500); // Match the animation duration
+}
+
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        closeLeaderboard();
+    }
+});
+</script>
+</body>
+</html>
